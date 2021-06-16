@@ -28,7 +28,9 @@ func Reboot(delay time.Duration) {
 		} else {
 			//cmd2run = "(sleep 1; reboot)&>>/tmp/reboot.log&disown"
 			//			cmd2run = "reboot"
-			cmd2run = "(sleep 1; reboot)&>>/tmp/reboot.log&disown"
+			cmd2run = "reboot"
+			//			syscall.Sync()
+			//			syscall.Reboot(syscall.LINUX_REBOOT_CMD_RESTART)
 		}
 		if _, _, err := sexec.ExecCommandShell(cmd2run, time.Second*10, true); err == nil {
 			os.Exit(0)
@@ -48,13 +50,10 @@ func RestartApp(appName string, delay ...time.Duration) bool {
 		//		os.Exit(0)
 		//		return
 		//		if _, _, err := sexec.ExecCommandShell(fmt.Sprintf(`systemctl restart %s`, appName), time.Second*10, true); err != nil {
-		if _, _, err := sexec.ExecCommandShell(fmt.Sprintf(`(sleep 1; systemctl restart %s)&>/dev/null&disown`, appName), time.Second*10, true); err != nil {
-
+		if _, _, err := sexec.ExecCommandShell(fmt.Sprintf(`systemctl restart %s`, appName), time.Second*10, true); err != nil {
 			log.Println("Can not restart apps", err)
-			return
-		} else {
-			os.Exit(0)
 		}
+		return
 	}()
 	return true
 }
@@ -150,4 +149,12 @@ func InitSignal(cleanup func()) {
 		}
 		os.Exit(1)
 	}()
+}
+
+func Uptime() string {
+	if stdout, _, err := sexec.ExecCommand("uptime", "-p"); err != nil {
+		return ""
+	} else {
+		return string(stdout)
+	}
 }
