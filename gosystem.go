@@ -26,8 +26,6 @@ func Reboot(delay time.Duration) {
 		if runtime.GOOS == "windows" {
 			cmd2run = `C:\Windows\System32\shutdown.exe /r /t 3`
 		} else {
-			//cmd2run = "(sleep 1; reboot)&>>/tmp/reboot.log&disown"
-			//			cmd2run = "reboot"
 			cmd2run = "reboot"
 			//			syscall.Sync()
 			//			syscall.Reboot(syscall.LINUX_REBOOT_CMD_RESTART)
@@ -48,14 +46,20 @@ func RestartApp(appName string, delay ...time.Duration) bool {
 			time.Sleep(time.Second * 5)
 		}
 		//		os.Exit(0)
-		//		return
-		//		if _, _, err := sexec.ExecCommandShell(fmt.Sprintf(`systemctl restart %s`, appName), time.Second*10, true); err != nil {
 		if _, _, err := sexec.ExecCommandShell(fmt.Sprintf(`systemctl restart %s`, appName), time.Second*10, true); err != nil {
 			log.Println("Can not restart apps", err)
 		}
 		return
 	}()
 	return true
+}
+
+func AppIsActive(appName string) bool {
+	if _, _, err := sexec.ExecCommandShell(fmt.Sprintf(`systemctl is-active --quiet %s`, appName), time.Second*10, true); err != nil {
+		return false
+	} else {
+		return true
+	}
 }
 
 //(appName, exepath, clickdir string, fullpathflag bool, showterminal bool, args ...string)
