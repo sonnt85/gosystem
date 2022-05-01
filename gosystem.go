@@ -2,22 +2,60 @@ package gosystem
 
 import (
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
 	"os"
 	"os/signal"
+	"os/user"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/mattn/go-isatty"
+
 	"github.com/sonnt85/gosutils/sexec"
 	"github.com/sonnt85/gosutils/shellwords"
+	"golang.org/x/term"
 )
 
 //func CPULoad() {
 //	sexec.ExecCommand()
 //}
+type fduintptr interface {
+	Fd() uintptr
+}
+
+type fdint interface {
+	Fd() int
+}
+
+func IsTerminal(fd uintptr) bool {
+	return term.IsTerminal(int(fd))
+}
+
+func IsTerminalWriter(w io.Writer) bool {
+	return checkIfTerminal(w)
+}
+
+func IsTerminalWriter1(w io.Writer) bool {
+	if false {
+		if fileprr, ok := w.(*os.File); ok {
+			return isatty.IsTerminal(fileprr.Fd())
+		} else {
+			return false
+		}
+	} else {
+		if fw, ok := w.(fduintptr); ok {
+			return IsTerminal(fw.Fd())
+		} else if fw, ok := w.(fdint); ok {
+			term.IsTerminal(fw.Fd())
+		}
+		return false
+	}
+}
 
 func Reboot(delay time.Duration) {
 	go func() {
@@ -149,6 +187,7 @@ func InitSignal(cleanup func()) {
 	go func() {
 		<-c
 		if cleanup != nil {
+
 			cleanup()
 		}
 		os.Exit(1)
@@ -159,6 +198,129 @@ func Uptime() string {
 	if stdout, _, err := sexec.ExecCommand("uptime", "-p"); err != nil {
 		return ""
 	} else {
-		return string(stdout)
+		return strings.TrimRight(string(stdout), "\n")
 	}
+}
+
+func DirIsWritable(path string) (isWritable bool, err error) {
+	return dirIsWritable(path)
+}
+
+func FileIWriteable(path string) (isWritable bool) {
+	return fileIWriteable(path)
+}
+
+func PathIsWriteable(path string) (isWritable bool) {
+	isWritable = false
+	if file, err := os.OpenFile(path, os.O_WRONLY, 0666); err == nil {
+		defer file.Close()
+		isWritable = true
+	} else {
+		if os.IsPermission(err) {
+			return false
+		}
+	}
+	return
+}
+
+func GetHomeDir() (home string) {
+	home, err := os.UserHomeDir() //homedir.Dir()
+	if err == nil {
+		return home
+	} else {
+		return ""
+	}
+}
+
+func GetUsername() string {
+	if user, err := user.Current(); err == nil {
+		return user.Username
+	} else {
+		return ""
+	}
+}
+
+func Getwd() (pwd string) {
+	var err error
+	if pwd, err = os.Getwd(); err != nil {
+		var f *os.File
+		if f, err = os.Open("."); err == nil {
+			pwd = f.Name()
+			f.Close()
+		} else {
+			pwd = GetHomeDir()
+		}
+	}
+	return
+}
+
+func GetEnvPathValue() string {
+	for _, pathname := range []string{"PATH", "path"} {
+		path := os.Getenv(pathname)
+		if len(path) != 0 {
+			return path
+		}
+	}
+	return ""
+}
+
+func GetEnvPath() []string {
+	envs := GetEnvPathValue()
+	if len(envs) != 0 {
+		return strings.Split(envs, string(os.PathListSeparator))
+	}
+	return []string{}
+}
+
+// func ExecIsExistsInPathEnv(binpath string) (ebinpath string, err error) {
+// 	//		sutils.PATHHasFile(filepath, PATH) && sutils.FileIWriteable(ebinpath)
+// 	if ebinpath, err = exec.LookPath(binpath); err == nil && fileIWriteable(ebinpath) {
+// 		return
+// 	} else {
+// 		return func() (ebinpath string, err error) {
+// 			if envs := GetEnvPath(); len(envs) != 0 {
+// 				for i := len(envs); i >= 1; i-- {
+// 					ebinpath = envs[i-1]
+// 					var ok bool
+// 					if ok, err = dirIsWritable(ebinpath); err == nil && ok {
+// 						return
+// 						// return filepath.Join(dirpath, binpath)
+// 					}
+// 				}
+// 			}
+// 			return "", errors.New("not found")
+// 		}()
+// 	}
+// }
+
+func GetPathDirInEnvPathCanWrite() (ebinpath string) {
+	//		sutils.PATHHasFile(filepath, PATH) && sutils.FileIWriteable(ebinpath)
+	var err error
+	if envs := GetEnvPath(); len(envs) != 0 {
+		for i := len(envs); i >= 1; i-- {
+			ebinpath = envs[i-1]
+			var ok bool
+			if ok, err = dirIsWritable(ebinpath); err == nil && ok {
+				return
+			}
+		}
+	}
+	return ""
+}
+
+func GetPathDirInEnvPathCanWriteOrCreateNew(prefixNameForNew string) (ebinpath string, new bool) {
+	//		sutils.PATHHasFile(filepath, PATH) && sutils.FileIWriteable(ebinpath)
+	var err error
+	if envs := GetEnvPath(); len(envs) != 0 {
+		for i := len(envs); i >= 1; i-- {
+			ebinpath = envs[i-1]
+			var ok bool
+			if ok, err = dirIsWritable(ebinpath); err == nil && ok {
+				return
+			}
+		}
+	}
+	new = true
+	ebinpath, _ = os.MkdirTemp("", prefixNameForNew)
+	return
 }
