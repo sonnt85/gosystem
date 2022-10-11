@@ -7,6 +7,9 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"os/exec"
+	"strconv"
+	"strings"
 	"syscall"
 )
 
@@ -57,4 +60,59 @@ func dirIsWritable(path string) (isWritable bool, err error) {
 
 	isWritable = true
 	return
+}
+
+func hasGroupSudo() bool {
+	cmd := exec.Command("id")
+	output, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(output), "(sudo)")
+}
+
+func checkRoot() (bool, error) {
+	if hasGroupSudo() {
+		return true, nil
+	}
+	cmd := exec.Command("id", "-u")
+
+	output, err := cmd.Output()
+	if err != nil {
+		return false, err
+	}
+
+	i, err := strconv.Atoi(string(output[:len(output)-1]))
+	if err != nil {
+		return false, err
+	}
+
+	if i == 0 {
+		return true, nil
+	}
+
+	return false, nil
+}
+
+func isRoot() bool {
+	cmd := exec.Command("id", "-u")
+
+	output, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+
+	i, err := strconv.Atoi(string(output[:len(output)-1]))
+	if err != nil {
+		return false
+	}
+
+	if i == 0 {
+		return true
+	}
+	return false
+}
+
+func isDoubleClickRun() bool {
+	return true
 }

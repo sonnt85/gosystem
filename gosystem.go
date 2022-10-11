@@ -10,14 +10,16 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/mattn/go-isatty"
-
+	"github.com/shirou/gopsutil/process"
+	"github.com/sonnt85/gosutils/cmdshellwords"
+	"github.com/sonnt85/gosutils/goacl"
 	"github.com/sonnt85/gosutils/sexec"
-	"github.com/sonnt85/gosutils/shellwords"
 	"golang.org/x/term"
 )
 
@@ -55,6 +57,10 @@ func IsTerminalWriter1(w io.Writer) bool {
 		}
 		return false
 	}
+}
+
+func GetGoroutineId() int64 {
+	return runtime.GetGoroutineId()
 }
 
 func Reboot(delay time.Duration) {
@@ -103,50 +109,46 @@ func AppIsActive(appName string) bool {
 //(appName, exepath, clickdir string, fullpathflag bool, showterminal bool, args ...string)
 func CreateClickTorun(appName, exepath, clickdir string, fullpathflag bool, showterminal bool, args ...string) (err error) {
 	pwd, _ := os.Getwd()
-	swargs := shellwords.Join(args...)
+	swargs := cmdshellwords.Join(args...)
+	exepathwithargs := ""
 	GOOS := runtime.GOOS
 	if len(exepath) == 0 {
 		exepath, _ = os.Executable()
 	}
 	if !fullpathflag {
 		relpath, _ := filepath.Rel(pwd, exepath)
+		exepath = relpath
 		if GOOS == "windows" {
-			exepath = shellwords.Join(append([]string{relpath}, swargs)...)
-			//			exepath = relpath
+			exepathwithargs = cmdshellwords.Join(append([]string{relpath}, swargs)...)
 		} else {
-			//			filepath.Join(elem)
-			exepath = `sh -c "cd $(dirname %k) && ./` + relpath + " " + swargs + `"`
+			exepathwithargs = `sh -c "cd $(dirname %k) && ./` + relpath + " " + swargs + `"`
 		}
-		//		exepath = filepath.Join(filepath.Dir(exepath), filepath.Base(exepath))
 	} else {
-		exepath = shellwords.Join(append([]string{exepath}, swargs)...)
+		exepathwithargs = cmdshellwords.Join(append([]string{exepath}, swargs)...)
 	}
-	desktopContent := ""
 	clickdir = filepath.Join(clickdir, appName)
 	if GOOS == "windows" {
-		//		if showterminal {
-		//			showterminal = true
-		//		}
-		desktopContent = fmt.Sprintf(`%s`, exepath)
-		//WshShell.Run """" & cmdrun & """" & sargs, 0, False
+		showterminalOpt := "False"
+		if showterminal {
+			showterminalOpt = "True"
+		}
 		vbs := fmt.Sprintf(`Set WshShell = CreateObject("WScript.Shell")
-WshShell.Run chr(34) & "%s" & Chr(34), 0
-Set WshShell = Nothing`, exepath)
+WshShell.Run "%s", 0, %s
+`, exepathwithargs, showterminalOpt)
 		if err1 := ioutil.WriteFile(clickdir+".vbs", []byte(vbs), os.FileMode(0755)); err1 != nil {
 			err = err1
 		}
-		if err1 := ioutil.WriteFile(clickdir+".bat", []byte(desktopContent), os.FileMode(0755)); err1 != nil {
+		if err1 := ioutil.WriteFile(clickdir+".bat", []byte(exepathwithargs), os.FileMode(0755)); err1 != nil {
 			err = err1
 		}
 		return
 	} else if GOOS == "darwin" {
 		//Icon=
-		desktopContent = fmt.Sprintf("%s", exepath)
-		err = ioutil.WriteFile(clickdir+".command", []byte(desktopContent), os.FileMode(0755))
+		err = ioutil.WriteFile(clickdir+".command", []byte(exepathwithargs), os.FileMode(0755))
 		return err
 	} else {
 		//Icon=
-		desktopContent = fmt.Sprintf(`[Desktop Entry]
+		desktopContent := fmt.Sprintf(`[Desktop Entry]
 Name=%sRun
 Comment=Click to run
 Exec=%s
@@ -158,12 +160,47 @@ Categories=Utility;Application;Development;`, appName, exepath, showterminal)
 	}
 }
 
-func KilPid(pid int) error {
+func GetProcessFromPid(pidi interface{}) (p *process.Process) {
+	var err error
+	var pid int
+	switch v := pidi.(type) {
+	case int:
+		pid = int(v)
+	case int64:
+		pid = int(v)
+	case string:
+		if pid, err = strconv.Atoi(v); err != nil {
+			return
+		}
+	default:
+		return nil
+	}
+	if p, err = process.NewProcess(int32(pid)); err == nil {
+		return
+	}
+	return
+}
+
+func KilPid(pidi interface{}) (err error) {
 	//	p, err := process.NewProcess(pid) // Specify process id of parent
 	//	if err != nil {
 	//		return err
 	//	}
-	p, err := os.FindProcess(pid)
+	var pid int
+	switch v := pidi.(type) {
+	case int:
+		pid = v
+	case int64:
+		pid = int(v)
+	case string:
+		if pid, err = strconv.Atoi(v); err != nil {
+			return
+		}
+	default:
+		return nil
+	}
+	var p *os.Process
+	p, err = os.FindProcess(pid)
 	if err != nil {
 		return err
 	}
@@ -183,7 +220,7 @@ func KilPid(pid int) error {
 
 func InitSignal(cleanup func()) {
 	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
 	go func() {
 		<-c
 		if cleanup != nil {
@@ -206,6 +243,15 @@ func DirIsWritable(path string) (isWritable bool, err error) {
 	return dirIsWritable(path)
 }
 
+func FirstDirIsWriteable(paths []string) string {
+	for i := 0; i < len(paths); i++ {
+		if ok, err := DirIsWritable(paths[i]); err == nil && ok {
+			return paths[i]
+		}
+	}
+	return ""
+}
+
 func FileIWriteable(path string) (isWritable bool) {
 	return fileIWriteable(path)
 }
@@ -223,10 +269,51 @@ func PathIsWriteable(path string) (isWritable bool) {
 	return
 }
 
+func FileIsExist(path string) bool {
+	if finfo, err := os.Stat(path); err == nil {
+		if !finfo.IsDir() {
+			return true
+		}
+	}
+	return false
+}
+
+func DirIsExist(path string) bool {
+	if finfo, err := os.Stat(path); err == nil {
+		if finfo.IsDir() {
+			return true
+		}
+	}
+	return false
+}
+
+func TouchFile(name string) error {
+	file, err := os.OpenFile(name, os.O_RDONLY|os.O_CREATE, 0644)
+	if err != nil {
+		log.Println(err)
+		return err
+	}
+	return file.Close()
+	//	return nil
+}
+
+func WriteTrucFile(name string, contents string) bool {
+	return nil == os.WriteFile(name, []byte(contents), 0755)
+}
+
 func GetHomeDir() (home string) {
-	home, err := os.UserHomeDir() //homedir.Dir()
+	home, err := HomeDir() // os.UserHomeDir()
 	if err == nil {
 		return home
+	} else {
+		return ""
+	}
+}
+
+func GetHostname() (hname string) {
+	hname, err := os.Hostname()
+	if err == nil {
+		return hname
 	} else {
 		return ""
 	}
@@ -323,4 +410,55 @@ func GetPathDirInEnvPathCanWriteOrCreateNew(prefixNameForNew string) (ebinpath s
 	new = true
 	ebinpath, _ = os.MkdirTemp("", prefixNameForNew)
 	return
+}
+
+func CheckSudo() (bool, error) {
+	return checkRoot()
+}
+
+func UserIsRoot() bool {
+	return isRoot()
+}
+
+func UserHasSudo() bool {
+	ok, err := checkRoot()
+	return err == nil && ok
+}
+
+func SetAllEnv(env []string) {
+	os.Clearenv()
+	for _, e := range env {
+		k, v, ok := strings.Cut(e, "=")
+		if !ok {
+			continue
+		}
+		os.Setenv(k, v)
+	}
+}
+
+func EnrovimentMap() (me map[string]string) {
+	me = make(map[string]string)
+	env := os.Environ()
+	for _, e := range env {
+		k, v, ok := strings.Cut(e, "=")
+		if !ok {
+			continue
+		}
+		me[k] = v
+	}
+	return
+}
+
+func EnrovimentMapAdd(key, val string) (me map[string]string) {
+	me = EnrovimentMap()
+	me[key] = val
+	return
+}
+
+func IsDoubleClickRun() bool {
+	return isDoubleClickRun()
+}
+
+func Chmod(name string, mode os.FileMode) error {
+	return goacl.Chmod(name, mode)
 }
