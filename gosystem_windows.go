@@ -68,6 +68,21 @@ func getRegistry(rootkey string, path string) {
 }
 
 func dirIsWritable(path string) (isWritable bool, err error) {
+	var file *os.File
+	file, err = os.CreateTemp(path, "test")
+	if err != nil {
+		return
+	} else {
+		if err = file.Close(); err != nil {
+			return
+		}
+		err = os.Remove(file.Name())
+		if err == nil {
+			isWritable = true
+		}
+		return
+	}
+
 	isWritable = false
 	var info fs.FileInfo
 	info, err = os.Stat(path)
@@ -136,4 +151,57 @@ func isDoubleClickRun() bool {
 		}
 	}
 	return true
+}
+
+func writeToFileWithLockSFL(filePath string, data interface{}) error {
+	res, err, _ := fileGroup.Do(filePath, func() (interface{}, error) {
+		file, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0755)
+		if err != nil {
+			return nil, err
+		}
+		defer file.Close()
+
+		overlapped := &windows.Overlapped{}
+		err = windows.LockFileEx(windows.Handle(file.Fd()), windows.LOCKFILE_EXCLUSIVE_LOCK, 0, 0, 0, overlapped)
+		if err != nil {
+			return nil, err
+		}
+		defer windows.UnlockFileEx(windows.Handle(file.Fd()), 0, 0, 0, overlapped)
+
+		switch d := data.(type) {
+		case string:
+			_, err = file.WriteString(d)
+			if err != nil {
+				return nil, err
+			}
+		case []byte:
+			_, err = file.Write(d)
+			if err != nil {
+				return nil, err
+			}
+		default:
+			return nil, fmt.Errorf("unsupported data type")
+		}
+
+		return nil, nil
+	})
+
+	if err != nil {
+		return err
+	}
+	if res != nil {
+		return res.(error)
+	} else {
+		return nil
+	}
+}
+
+func symlink(src, dst string) error {
+	if srcn, err := syscall.UTF16PtrFromString(src); err != nil {
+		return err
+	} else if dstn, _ := syscall.UTF16PtrFromString(dst); err != nil {
+		return err
+	} else {
+		return windows.CreateSymbolicLink(srcn, dstn, windows.SYMBOLIC_LINK_FLAG_DIRECTORY)
+	}
 }

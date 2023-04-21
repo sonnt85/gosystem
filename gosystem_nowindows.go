@@ -5,10 +5,11 @@ package gosystem
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
-	"strconv"
+	"os/user"
 	"strings"
 	"syscall"
 )
@@ -63,6 +64,9 @@ func dirIsWritable(path string) (isWritable bool, err error) {
 }
 
 func hasGroupSudo() bool {
+	if isRoot() {
+		return true
+	}
 	cmd := exec.Command("id")
 	output, err := cmd.Output()
 	if err != nil {
@@ -75,44 +79,75 @@ func checkRoot() (bool, error) {
 	if hasGroupSudo() {
 		return true, nil
 	}
-	cmd := exec.Command("id", "-u")
-
-	output, err := cmd.Output()
-	if err != nil {
-		return false, err
-	}
-
-	i, err := strconv.Atoi(string(output[:len(output)-1]))
-	if err != nil {
-		return false, err
-	}
-
-	if i == 0 {
-		return true, nil
-	}
-
-	return false, nil
+	return isRoot(), nil
 }
 
 func isRoot() bool {
-	cmd := exec.Command("id", "-u")
-
-	output, err := cmd.Output()
+	currentUser, err := user.Current()
 	if err != nil {
+		cmd := exec.Command("id", "-u")
+
+		output, err := cmd.Output()
+		if err != nil {
+			return false
+		}
+
+		if strings.TrimSpace(string(output)) == "0" {
+			return true
+		}
 		return false
 	}
-
-	i, err := strconv.Atoi(string(output[:len(output)-1]))
-	if err != nil {
-		return false
-	}
-
-	if i == 0 {
+	if currentUser.Uid == "0" {
 		return true
+	} else {
+		return false
 	}
-	return false
+
 }
 
 func isDoubleClickRun() bool {
 	return true
+}
+
+func writeToFileWithLockSFL(filePath string, data interface{}) error {
+	res, err, _ := fileGroup.Do(filePath, func() (interface{}, error) {
+		file, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0755)
+		if err != nil {
+			return nil, err
+		}
+		defer file.Close()
+
+		syscall.Flock(int(file.Fd()), syscall.LOCK_EX)
+		defer syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+
+		switch d := data.(type) {
+		case string:
+			_, err = file.WriteString(d)
+			if err != nil {
+				return nil, err
+			}
+		case []byte:
+			_, err = file.Write(d)
+			if err != nil {
+				return nil, err
+			}
+		default:
+			return nil, fmt.Errorf("unsupported data type")
+		}
+
+		return nil, nil
+	})
+
+	if err != nil {
+		return err
+	}
+	if res != nil {
+		return res.(error)
+	} else {
+		return nil
+	}
+}
+
+func symlink(src, dst string) error {
+	return os.Symlink(src, dst)
 }

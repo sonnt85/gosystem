@@ -15,17 +15,20 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/sync/singleflight"
+
 	"github.com/mattn/go-isatty"
 	"github.com/shirou/gopsutil/process"
 	"github.com/sonnt85/gosutils/cmdshellwords"
 	"github.com/sonnt85/gosutils/goacl"
 	"github.com/sonnt85/gosutils/sexec"
+	"github.com/sonnt85/gosutils/sutils"
 	"golang.org/x/term"
 )
 
-//func CPULoad() {
-//	sexec.ExecCommand()
-//}
+//	func CPULoad() {
+//		sexec.ExecCommand()
+//	}
 type fduintptr interface {
 	Fd() uintptr
 }
@@ -34,12 +37,23 @@ type fdint interface {
 	Fd() int
 }
 
+var NewLine = "\n"
+
 func IsTerminal(fd uintptr) bool {
 	return term.IsTerminal(int(fd))
 }
 
 func IsTerminalWriter(w io.Writer) bool {
 	return checkIfTerminal(w)
+}
+
+func init() {
+	GOOS := runtime.GOOS
+	if GOOS == "windows" {
+		NewLine = "\r\n"
+	} else if GOOS == "darwin" {
+		NewLine = "\r"
+	}
 }
 
 func IsTerminalWriter1(w io.Writer) bool {
@@ -59,7 +73,7 @@ func IsTerminalWriter1(w io.Writer) bool {
 	}
 }
 
-func GetGoroutineId() int64 {
+func GetGoroutineId() uint64 {
 	return runtime.GetGoroutineId()
 }
 
@@ -74,7 +88,7 @@ func Reboot(delay time.Duration) {
 			//			syscall.Sync()
 			//			syscall.Reboot(syscall.LINUX_REBOOT_CMD_RESTART)
 		}
-		if _, _, err := sexec.ExecCommandShell(cmd2run, time.Second*10, true); err == nil {
+		if _, _, err := sexec.ExecCommandShell(cmd2run, time.Second*10); err == nil {
 			os.Exit(0)
 		}
 	}()
@@ -90,7 +104,7 @@ func RestartApp(appName string, delay ...time.Duration) bool {
 			time.Sleep(time.Second * 5)
 		}
 		//		os.Exit(0)
-		if _, _, err := sexec.ExecCommandShell(fmt.Sprintf(`systemctl restart %s`, appName), time.Second*10, true); err != nil {
+		if _, _, err := sexec.ExecCommandShell(fmt.Sprintf(`systemctl restart %s`, appName), time.Second*10); err != nil {
 			log.Println("Can not restart apps", err)
 		}
 		return
@@ -99,14 +113,14 @@ func RestartApp(appName string, delay ...time.Duration) bool {
 }
 
 func AppIsActive(appName string) bool {
-	if _, _, err := sexec.ExecCommandShell(fmt.Sprintf(`systemctl is-active --quiet %s`, appName), time.Second*10, true); err != nil {
+	if _, _, err := sexec.ExecCommandShell(fmt.Sprintf(`systemctl is-active --quiet %s`, appName), time.Second*10); err != nil {
 		return false
 	} else {
 		return true
 	}
 }
 
-//(appName, exepath, clickdir string, fullpathflag bool, showterminal bool, args ...string)
+// (appName, exepath, clickdir string, fullpathflag bool, showterminal bool, args ...string)
 func CreateClickTorun(appName, exepath, clickdir string, fullpathflag bool, showterminal bool, args ...string) (err error) {
 	pwd, _ := os.Getwd()
 	swargs := cmdshellwords.Join(args...)
@@ -128,16 +142,16 @@ func CreateClickTorun(appName, exepath, clickdir string, fullpathflag bool, show
 	}
 	clickdir = filepath.Join(clickdir, appName)
 	if GOOS == "windows" {
-		showterminalOpt := "False"
-		if showterminal {
-			showterminalOpt = "True"
-		}
-		vbs := fmt.Sprintf(`Set WshShell = CreateObject("WScript.Shell")
-WshShell.Run "%s", 0, %s
-`, exepathwithargs, showterminalOpt)
-		if err1 := ioutil.WriteFile(clickdir+".vbs", []byte(vbs), os.FileMode(0755)); err1 != nil {
-			err = err1
-		}
+		// showterminalOpt := "False"
+		// if showterminal {
+		// 	showterminalOpt = "True"
+		// }
+		// 		vbs := fmt.Sprintf(`Set WshShell = CreateObject("WScript.Shell")
+		// WshShell.Run "%s", 0, %s
+		// `, exepathwithargs, showterminalOpt)
+		// 		if err1 := ioutil.WriteFile(clickdir+".vbs", []byte(vbs), os.FileMode(0755)); err1 != nil {
+		// 			err = err1
+		// 		}
 		if err1 := ioutil.WriteFile(clickdir+".bat", []byte(exepathwithargs), os.FileMode(0755)); err1 != nil {
 			err = err1
 		}
@@ -181,6 +195,113 @@ func GetProcessFromPid(pidi interface{}) (p *process.Process) {
 	return
 }
 
+func SendSignalToAllProcess(sig os.Signal) (errret []error) {
+	processList, err := process.Processes()
+	if err != nil {
+		return []error{err}
+	}
+	sigcall := syscall.Signal(sig.(syscall.Signal))
+	for _, p := range processList {
+		if os.Getegid() == int(p.Pid) {
+			continue
+		}
+		if err := p.SendSignal(sigcall); err != nil {
+			errret = append(errret, err)
+		}
+	}
+	return
+}
+
+func KilProcessName(name string, isFullname ...bool) error {
+	ps, err := process.Processes()
+	if err != nil {
+		return err
+	}
+	var pname string
+	// found := false
+	for _, p := range ps {
+		if len(isFullname) != 0 && isFullname[0] {
+			pname, err = p.Exe()
+		} else {
+			pname, err = p.Name()
+		}
+
+		if err == nil && pname == name {
+			// found = true
+			p.Kill()
+		}
+	}
+	return nil
+}
+
+func Pgrep(names ...string) (ps []*process.Process) {
+	ps, _ = Processes(names...)
+	return
+}
+
+func GetMapPidsOpenFile(filePath string) (pidsmap map[int]string) {
+	pidsmap = make(map[int]string, 0)
+	filepathAbs, err := filepath.Abs(filePath)
+	if err != nil {
+		return
+	}
+
+	processes, err := process.Processes()
+	if err != nil {
+		return
+	}
+
+	for _, p := range processes {
+		fds, err := p.OpenFiles()
+		if err != nil {
+			continue
+		}
+
+		for _, fd := range fds {
+			if fd.Path == filepathAbs {
+				if pname, err := p.Name(); err == nil {
+					pidsmap[int(p.Pid)] = pname
+				}
+			}
+		}
+	}
+	return
+}
+
+func Processes(names ...string) (ps []*process.Process, err error) {
+	// func Pgrep(name string, isFullname ...bool) error {
+	ps, err = process.Processes()
+	if len(names) == 0 {
+		return
+	}
+
+	if err != nil {
+		return
+	}
+	var pname string
+	// found := false
+	retps := make([]*process.Process, 0)
+	for _, p := range ps {
+		pname, err = p.Name()
+
+		if err == nil && sutils.SlideHasElementInStrings(names, pname) {
+			retps = append(retps, p)
+		}
+	}
+	return retps, nil
+}
+
+func ProcessesPids(names ...string) (pids []int) {
+	pids = make([]int, 0)
+	if ps, err := Processes(names...); err == nil {
+		for _, v := range ps {
+			pids = append(pids, int(v.Pid))
+		}
+	}
+	return
+
+}
+
 func KilPid(pidi interface{}) (err error) {
 	//	p, err := process.NewProcess(pid) // Specify process id of parent
 	//	if err != nil {
@@ -218,16 +339,24 @@ func KilPid(pidi interface{}) (err error) {
 	return p.Kill() // Kill the parent process
 }
 
-func InitSignal(cleanup func()) {
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
-	go func() {
-		<-c
-		if cleanup != nil {
+func SignalToInt(s os.Signal) int {
+	if i, ok := s.(syscall.Signal); ok {
+		return int(i)
+	}
+	return 0
+}
 
-			cleanup()
+func InitSignal(cleanup func(s os.Signal) int) {
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT)
+	go func() {
+		s := <-c
+		if cleanup != nil {
+			retcode := cleanup(s)
+			if retcode == 0 {
+				os.Exit(retcode)
+			}
 		}
-		os.Exit(1)
 	}()
 }
 
@@ -290,7 +419,7 @@ func DirIsExist(path string) bool {
 func TouchFile(name string) error {
 	file, err := os.OpenFile(name, os.O_RDONLY|os.O_CREATE, 0644)
 	if err != nil {
-		log.Println(err)
+		// log.Println(err)
 		return err
 	}
 	return file.Close()
@@ -349,6 +478,57 @@ func GetEnvPathValue() string {
 		}
 	}
 	return ""
+}
+
+func PathGetEnvPathKey() string {
+	for _, pathname := range []string{"PATH", "path"} {
+		path := os.Getenv(pathname)
+		if len(path) != 0 {
+			return pathname
+		}
+	}
+	return ""
+}
+
+func PathAddDirs(dirs ...string) {
+	for _, v := range dirs {
+		os.Setenv(PathGetEnvPathKey(), PathJointList(PathGetEnvPathValue(), v))
+	}
+}
+
+func PathJointList(path, data string) string {
+	//	data = data + string(os.PathSeparator)
+	if len(path) == 0 {
+		return data
+	}
+	return path + string(os.PathListSeparator) + data
+	//	filepath.ListSeparator
+}
+
+func PathGetEnvPathValue() string {
+	for _, pathname := range []string{"PATH", "path"} {
+		path := os.Getenv(pathname)
+		if len(path) != 0 {
+			return path
+		}
+	}
+	return ""
+}
+
+func PathList() []string {
+	envs := PathGetEnvPathValue()
+	if len(envs) != 0 {
+		return strings.Split(envs, string(os.PathListSeparator))
+	}
+	return []string{}
+}
+
+func PathRemoveDirs(dirs ...string) {
+	oldpath := sutils.PathGetEnvPathValue()
+	for _, d := range dirs {
+		oldpath = sutils.PathRemove(oldpath, d)
+	}
+	os.Setenv(sutils.PathGetEnvPathKey(), oldpath)
 }
 
 func GetEnvPath() []string {
@@ -436,10 +616,14 @@ func SetAllEnv(env []string) {
 	}
 }
 
-func EnrovimentMap() (me map[string]string) {
+func EnrovimentMap(envstrings ...string) (me map[string]string) {
 	me = make(map[string]string)
-	env := os.Environ()
-	for _, e := range env {
+
+	if len(envstrings) == 0 {
+		envstrings = os.Environ()
+	}
+
+	for _, e := range envstrings {
 		k, v, ok := strings.Cut(e, "=")
 		if !ok {
 			continue
@@ -449,8 +633,20 @@ func EnrovimentMap() (me map[string]string) {
 	return
 }
 
-func EnrovimentMapAdd(key, val string) (me map[string]string) {
-	me = EnrovimentMap()
+func EnrovimentMapToStrings(me map[string]string) (se []string) {
+	se = []string{}
+	for k, e := range me {
+		se = append(se, fmt.Sprintf("%s=%s", k, e))
+	}
+	return
+}
+
+func EnrovimentStringAdd(key, val string, envstrings []string) (se []string) {
+	return append(envstrings, fmt.Sprintf("%s=%s", key, val))
+}
+
+func EnrovimentMapAdd(key, val string, envstrings ...string) (me map[string]string) {
+	me = EnrovimentMap(envstrings...)
 	me[key] = val
 	return
 }
@@ -461,4 +657,71 @@ func IsDoubleClickRun() bool {
 
 func Chmod(name string, mode os.FileMode) error {
 	return goacl.Chmod(name, mode)
+}
+
+var fileGroup singleflight.Group
+
+func WriteToFileWithLockSFL(filePath string, data interface{}) error {
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		file, err := os.Create(filePath)
+		if err != nil {
+			return err
+		}
+		file.Close()
+	}
+	return writeToFileWithLockSFL(filePath, data)
+}
+
+func TempFileCreateInNewTemDir(filename string) string {
+
+	rootdir, err := ioutil.TempDir("", "system")
+	if err != nil {
+		return ""
+	} else {
+		//			defer os.RemoveAll(dir)
+	}
+
+	return filepath.Join(rootdir, filename)
+}
+
+func TempFileCreateInNewTemDirWithContent(filename string, data []byte) string {
+	rootdir, err := ioutil.TempDir("", "system")
+	if err != nil {
+		return ""
+	}
+	fPath := filepath.Join(rootdir, filename)
+	err = os.WriteFile(fPath, data, 0755)
+	if err != nil {
+		os.RemoveAll(rootdir)
+		return ""
+	}
+	return fPath
+}
+
+func TempFileCreate() string {
+	if f, err := ioutil.TempFile("", "system"); err == nil {
+		defer f.Close()
+		return f.Name()
+	} else {
+		return ""
+	}
+}
+
+func TempFileCreateWithContent(data []byte) string {
+	if f, err := ioutil.TempFile("", "system"); err == nil {
+		var n int
+		if n, err = f.Write(data); err != nil && n == len(data) {
+			f.Close()
+			os.Remove(f.Name())
+			return ""
+		}
+		f.Close()
+		return f.Name()
+	} else {
+		return ""
+	}
+}
+
+func Symlink(src, dst string) error {
+	return symlink(src, dst)
 }
