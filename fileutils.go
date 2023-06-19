@@ -1,6 +1,8 @@
 package gosystem
 
 import (
+	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -15,6 +17,32 @@ func PathIsExist(path string) bool {
 		return true
 	}
 	return false
+}
+
+func CreateDirectoryIfParentExists(path string, modes ...fs.FileMode) error {
+	parentDir := filepath.Dir(path)
+	_, err := os.Stat(parentDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("parent directory does not exist: %s", parentDir)
+		}
+		return err
+	}
+	_, err = os.Stat(path)
+	if err == nil {
+		return nil
+	}
+
+	mode := fs.FileMode(0755)
+	if len(modes) != 0 {
+		mode = modes[0]
+	}
+	err = os.Mkdir(path, mode)
+	if err != nil {
+		return fmt.Errorf("failed to create directory: %s", err)
+	}
+
+	return nil
 }
 
 func FileCloneDate(dst, src string) bool {
@@ -59,28 +87,40 @@ func TouchFileInDirs(configDirs []string, fileName string, perms ...fs.FileMode)
 	return conPath
 }
 
-func FileCloneDateBaseBin(dst string, binnames ...string) bool {
+func FileCloneDateBaseBin(dst string, binnames ...string) (err error) {
 	//	var err error
 	if len(binnames) == 0 {
 		binnames = []string{"echo", "ifconfig", "ip", "cp", "ipconfig", "where", "sh"}
 	}
-	if FileIWriteable(dst) {
+	isw := false
+	if file, err := os.OpenFile(dst, os.O_WRONLY, 0666); err == nil {
+		isw = true
+		file.Close()
+	} else {
+		if !(os.ErrPermission == err || err == os.ErrNotExist) {
+			isw = true
+		}
+	}
+	if isw {
+		var p string
 		for _, binname := range binnames {
-			if p, err := exec.LookPath(binname); err == nil {
+			if p, err = exec.LookPath(binname); err == nil {
 				if FileCloneDate(dst, p) {
-					return true
+					return nil
 				}
 			} else {
 				if PathIsExist(binname) {
 					if FileCloneDate(dst, binname) {
-						return true
+						return nil
 					}
 				}
 			}
 		}
+	} else {
+		err = os.ErrPermission
 	}
 	//	log.Errorf("Can not update time for file %s base on ", binnames)
-	return false
+	return err
 }
 
 func GetExecPath() (pathexe string, err error) {
@@ -104,6 +144,32 @@ func FileGetSize(filepath string) (int64, error) {
 	}
 	// get the size
 	return fi.Size(), nil
+}
+
+func FileIsText(filepath string) bool {
+	file, err := os.Open(filepath)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+
+	bufferSize := 1024 // Kích thước của mỗi mảng byte
+	for {
+		buffer := make([]byte, bufferSize)
+		n, err := file.Read(buffer)
+		if n > 0 {
+			for _, b := range buffer[:n] {
+				if (b < 0x20 || b > 0x7e) && b != '\n' && b != '\r' && b != '\t' {
+					// fmt.Print(b)
+					return false
+				}
+			}
+		}
+		if err != nil {
+			return err == io.EOF
+		}
+	}
+	// return false
 }
 
 func MonitorMaxFilesSize(logDir string, maxsize int64, delFlag ...bool) {

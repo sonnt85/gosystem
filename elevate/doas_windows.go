@@ -28,7 +28,7 @@ func setAllEnv(env []string) {
 	}
 }
 
-func RunMeElevated() error {
+func RunMeElevated(showcmd ...bool) error {
 	verb := "runas"
 	exe, _ := os.Executable()
 	cwd, _ := os.Getwd()
@@ -40,7 +40,13 @@ func RunMeElevated() error {
 	argPtr, _ := syscall.UTF16PtrFromString(args)
 
 	var showCmd int32 = 1 //SW_NORMAL
-
+	if len(showcmd) != 0 {
+		if !showcmd[0] {
+			showCmd = 0
+		} else {
+			showCmd = 1
+		}
+	}
 	return windows.ShellExecute(0, verbPtr, exePtr, argPtr, cwdPtr, showCmd)
 }
 

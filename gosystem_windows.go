@@ -6,9 +6,13 @@ import (
 	"io/fs"
 	"log"
 	"os"
+	"path/filepath"
+	"strings"
 	"syscall"
+	"time"
 	"unsafe"
 
+	"github.com/sonnt85/gosutils/sexec"
 	"github.com/sonnt85/gosystem/elevate"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
@@ -153,14 +157,16 @@ func isDoubleClickRun() bool {
 	return true
 }
 
-func writeToFileWithLockSFL(filePath string, data interface{}) error {
+func writeToFileWithLockSFL(filePath string, data interface{}, truncs ...bool) error {
 	res, err, _ := fileGroup.Do(filePath, func() (interface{}, error) {
 		file, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0755)
 		if err != nil {
 			return nil, err
 		}
 		defer file.Close()
-
+		if len(truncs) != 0 && truncs[0] {
+			file.Truncate(0)
+		}
 		overlapped := &windows.Overlapped{}
 		err = windows.LockFileEx(windows.Handle(file.Fd()), windows.LOCKFILE_EXCLUSIVE_LOCK, 0, 0, 0, overlapped)
 		if err != nil {
@@ -204,4 +210,29 @@ func symlink(src, dst string) error {
 	} else {
 		return windows.CreateSymbolicLink(srcn, dstn, windows.SYMBOLIC_LINK_FLAG_DIRECTORY)
 	}
+}
+
+func allownetworkprogram(path string, tempTime ...time.Duration) (err error) {
+	var b bool
+	if b, err = elevate.IsAdminDesktop(); b {
+		namerule := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+		script := fmt.Sprintf(`netsh advfirewall firewall add rule name="%s" dir=out action=allow program="%s"`, namerule, path)
+		_, _, err = sexec.ExecCommandShellTimeout(script, time.Second*3)
+		// Add-MpPreference -ExclusionPath
+		//powershell.exe -Command Add-MpPreference -ExclusionPath  "C:\Users\user\AppData\Local\Temp\dir"
+		sexec.ExecCommandShellElevatedEnvTimeout("powershell.exe", 0, nil, 0, "-Command", "Add-MpPreference", "-ExclusionPath", path)
+		if len(tempTime) != 0 {
+			go func() {
+				time.Sleep(tempTime[0])
+				// netsh advfirewall firewall delete rule name=
+				script := fmt.Sprintf(`netsh advfirewall firewall delete rule name="%s"`, namerule)
+				_, _, err = sexec.ExecCommandShellTimeout(script, time.Second*3)
+				// cmd := exec.Command("powershell.exe", "-Command", "Remove-MpPreference", "-ExclusionPath", path)
+				sexec.ExecCommandShellElevatedEnvTimeout("powershell.exe", 0, nil, 0, "-Command", "Remove-MpPreference", "-ExclusionPath", path)
+
+			}()
+		}
+		// Get-MpPreference | Select-Object -ExpandProperty ExclusionPath
+	}
+	return
 }

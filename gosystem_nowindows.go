@@ -10,8 +10,10 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	"runtime"
 	"strings"
 	"syscall"
+	"time"
 )
 
 func fileIWriteable(path string) (isWritable bool) {
@@ -19,16 +21,34 @@ func fileIWriteable(path string) (isWritable bool) {
 	if file, err := os.OpenFile(path, os.O_WRONLY, 0666); err == nil {
 		defer file.Close()
 		isWritable = true
-	} else {
-		if os.IsPermission(err) {
-			return false
-		}
 	}
+	//  else {
+	// 	if os.IsPermission(err) {
+	// 		return false
+	// 	}
+	// }
 
 	return
 }
 
+func dirIsWritableSimple(path string) (bool, error) {
+	file, err := os.CreateTemp(path, "test-*.txt")
+	if err != nil {
+		return false, err
+	}
+	defer func() {
+		file.Close()
+		os.Remove(file.Name()) // Xóa tệp tin tạm sau khi sử dụng
+	}()
+
+	// Do something with the temporary file
+	return true, nil
+}
+
 func dirIsWritable(path string) (isWritable bool, err error) {
+	if runtime.GOOS == "darwin" {
+		return dirIsWritableSimple(path)
+	}
 	isWritable = false
 	var info fs.FileInfo
 	info, err = os.Stat(path)
@@ -109,14 +129,16 @@ func isDoubleClickRun() bool {
 	return true
 }
 
-func writeToFileWithLockSFL(filePath string, data interface{}) error {
+func writeToFileWithLockSFL(filePath string, data interface{}, truncs ...bool) error {
 	res, err, _ := fileGroup.Do(filePath, func() (interface{}, error) {
 		file, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0755)
 		if err != nil {
 			return nil, err
 		}
 		defer file.Close()
-
+		if len(truncs) != 0 && truncs[0] {
+			file.Truncate(0)
+		}
 		syscall.Flock(int(file.Fd()), syscall.LOCK_EX)
 		defer syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
 
@@ -150,4 +172,14 @@ func writeToFileWithLockSFL(filePath string, data interface{}) error {
 
 func symlink(src, dst string) error {
 	return os.Symlink(src, dst)
+}
+
+func allownetworkprogram(path string, tempTime ...time.Duration) (err error) {
+	return nil
+	// var b bool
+	// if b, err = elevate.IsAdminDesktop(); b {
+	// 	script := fmt.Sprintf(`netsh advfirewall firewall add rule name="Allow Network Access" dir=out action=allow program="%s"`, path)
+	// 	_, _, err = sexec.ExecCommandShell(script, time.Second*3)
+	// }
+	// return
 }

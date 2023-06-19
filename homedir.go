@@ -19,6 +19,14 @@ var DisableCache bool
 var homedirCache string
 var cacheLock sync.RWMutex
 
+func HomeDirNoErr() (h string) {
+	var err error
+	if h, err = HomeDir(); err != nil {
+		h = ""
+	}
+	return
+}
+
 // Dir returns the home directory for the executing user.
 //
 // This uses an OS-specific method for discovering the home directory.

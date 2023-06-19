@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/sonnt85/gosutils/sexec"
 	"github.com/sonnt85/gosystem"
 	"github.com/sonnt85/gsjson"
 	"github.com/tidwall/gjson"
@@ -28,8 +27,14 @@ func running(pid int, namePid, appname, seconname string) (ok bool) {
 			if ok, err = p.IsRunning(); err == nil && ok {
 				var name string
 				name, err = p.Name()
-				if (err == nil && name == namePid) || (len(seconname) != 0 && seconname == appname) {
-					return true
+				if err == nil && name == namePid {
+					if len(seconname) != 0 {
+						if seconname == appname {
+							return true
+						}
+					} else {
+						return true
+					}
 				}
 			}
 		}
@@ -46,12 +51,12 @@ func (f *Pidfile) isRunning(seconnames ...string) (err error) {
 			if namePid := f.Get("name").String(); len(namePid) != 0 {
 				if ok, err = p.IsRunning(); err == nil && ok {
 					var name string
-					name, err = p.Name()
-					if (err == nil && name == namePid) || (len(seconnames) != 0 && len(appname) != 0 && seconnames[0] == appname) {
-						return nil
-					} else {
-						err = errors.New("name error")
+					if name, err = p.Name(); err == nil && name == namePid {
+						if len(seconnames) == 0 || (seconnames[0] == appname) {
+							return nil
+						}
 					}
+					err = errors.New("name error")
 				} else {
 					err = errors.New("pidname is not running")
 				}
@@ -77,6 +82,10 @@ func (f *Pidfile) SetBinName(binname string) (err error) {
 
 func (f *Pidfile) SetPid(pid interface{}) (err error) {
 	return f.Set("pid", pid)
+}
+
+func (f *Pidfile) GetPidRunning() int64 {
+	return f.Get("pid").Int()
 }
 
 // pidi are int or string
@@ -110,15 +119,23 @@ func PidFileIsRunning(path string, passphrase []byte, progname string) (ok bool)
 // New creates a PID file using the specified path.
 func NewPidfile(path string, passphrase []byte, progname string, removeIfFileInvalid bool, datas ...map[string]interface{}) (f *Pidfile, err error) {
 	f = new(Pidfile)
-	var exepath, exebase string
-	exepath, err = sexec.GetExecPath()
-	if err != nil {
-		// exepath = os.Args[0]
+	var processName string
+	// exepath, err = sexec.GetExecPath()
+	// if err != nil {
+	// 	return
+	// }
+	currentPid := os.Getpid()
+	currentProcess := gosystem.GetProcessFromPid(currentPid)
+	if currentProcess == nil {
+		err = errors.New("can not get current process")
 		return
 	}
-	exebase = filepath.Base(exepath)
+	processName, err = currentProcess.Name()
+	if err != nil {
+		return
+	}
 	if len(path) == 0 {
-		path = filepath.Join(os.TempDir(), exebase+".pid")
+		path = filepath.Join(os.TempDir(), processName+".pid")
 		// f.RmdirFlag = true
 	}
 	// isrinning := PidFileIsRunning(path, passphrase, progname)
@@ -126,18 +143,29 @@ func NewPidfile(path string, passphrase []byte, progname string, removeIfFileInv
 	f.Fjson, err = gsjson.NewFjson(path, passphrase, removeIfFileInvalid, datas...)
 	// defer gosystem.WriteToFileWithLockSFL("/tmp/sdaemon.txt", fmt.Sprintf("AfterNewFjson \nK: %v\n%v\n", PidFileIsRunning(path, passphrase, progname), gsjson.DecodeJsonFileNoErr(path, passphrase)))
 	if err == nil {
-		currentPid := os.Getpid()
-		if err = f.isRunning(progname); err != nil || f.Get("pid").Int() == int64(currentPid) { //check old pid
-			err = nil
+		setConfig := func() {
 			f.Set("pid", currentPid)
 			if len(progname) != 0 {
 				f.Set("appname", progname)
 			}
-			f.Set("name", exebase)
+			f.Set("name", processName)
+		}
+		oldpid := f.Get("pid").Int()
+		// if err = f.isRunning(progname); err != nil || oldpid == int64(currentPid) { //check old pid
+		if err = f.isRunning(progname); err != nil || oldpid == int64(currentPid) { //oldpid == int64(currentPid) meaning restart, use for stini
+			err = nil
+			setConfig()
 			return
 		} else {
-			err = errors.New("the program is still running")
-			f.OtherRunning = true
+			if os.Getenv("__FORCEKILL__") == "true" {
+				err = nil
+				os.Unsetenv("__FORCEKILL__")
+				gosystem.KilPid(oldpid)
+				setConfig()
+			} else {
+				err = errors.New("the program is still running")
+				f.OtherRunning = true
+			}
 		}
 	}
 
