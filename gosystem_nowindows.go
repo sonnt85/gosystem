@@ -13,7 +13,7 @@ import (
 	"runtime"
 	"strings"
 	"syscall"
-	"time"
+	// "time"
 )
 
 func fileIWriteable(path string) (isWritable bool) {
@@ -83,8 +83,8 @@ func dirIsWritable(path string) (isWritable bool, err error) {
 	return
 }
 
-func hasGroupSudo() bool {
-	if isRoot() {
+func isCurrentUserInSudoGroup() bool {
+	if isCurrentUserRoot() {
 		return true
 	}
 	cmd := exec.Command("id")
@@ -95,14 +95,7 @@ func hasGroupSudo() bool {
 	return strings.Contains(string(output), "(sudo)")
 }
 
-func checkRoot() (bool, error) {
-	if hasGroupSudo() {
-		return true, nil
-	}
-	return isRoot(), nil
-}
-
-func isRoot() bool {
+func isCurrentUserRoot() bool {
 	currentUser, err := user.Current()
 	if err != nil {
 		cmd := exec.Command("id", "-u")
@@ -174,7 +167,7 @@ func symlink(src, dst string) error {
 	return os.Symlink(src, dst)
 }
 
-func allownetworkprogram(path string, tempTime ...time.Duration) (err error) {
+func firewallAddProgram(path string, tempTime ...interface{}) (err error) {
 	return nil
 	// var b bool
 	// if b, err = elevate.IsAdminDesktop(); b {
@@ -182,4 +175,90 @@ func allownetworkprogram(path string, tempTime ...time.Duration) (err error) {
 	// 	_, _, err = sexec.ExecCommandShell(script, time.Second*3)
 	// }
 	// return
+}
+
+func firewallRemoveProgram(path string, ruleName ...string) (err error) {
+	return nil
+}
+func getDefenderExclusions() ([]string, error) {
+	return []string{}, nil
+}
+func firewallHasRule(path string, ruleName ...string) bool {
+	return true
+}
+
+func copyOwnership(srcPath, destPath string) error {
+	// cmd := exec.Command("chown", "--reference="+srcPath, destPath)
+	// err := cmd.Run()
+	// if err != nil {
+	// 	return err
+	// }
+
+	// return nil
+
+	srcInfo, err := os.Stat(srcPath)
+	if err != nil {
+		return err
+	}
+
+	destInfo, err := os.Stat(destPath)
+	if err != nil {
+		return err
+	}
+
+	// Kiểm tra hệ điều hành
+	switch srcInfo.Sys().(type) {
+	case *syscall.Stat_t:
+		// Linux
+		destSys, ok := destInfo.Sys().(*syscall.Stat_t)
+		if !ok {
+			return fmt.Errorf("Unsupported destination system type")
+		}
+
+		// Copy UID
+		destSys.Uid = srcInfo.Sys().(*syscall.Stat_t).Uid
+
+		// Copy GID
+		destSys.Gid = srcInfo.Sys().(*syscall.Stat_t).Gid
+
+	default:
+		return fmt.Errorf("Unsupported source system type")
+	}
+
+	return nil
+}
+
+func getFileOwnership(path string) (uint32, uint32, error) {
+	// cmd := exec.Command("stat", "-f", "%u %g", path)
+	// output, err := cmd.Output()
+	// if err != nil {
+	// 	return 0, 0, err
+	// }
+
+	// ownership := strings.Split(strings.TrimSpace(string(output)), " ")
+	// uid, err := strconv.ParseUint(ownership[0], 10, 32)
+	// if err != nil {
+	// 	return 0, 0, err
+	// }
+
+	// gid, err := strconv.ParseUint(ownership[1], 10, 32)
+	// if err != nil {
+	// 	return 0, 0, err
+	// }
+
+	// return uint32(uid), uint32(gid), nil
+
+	fileInfo, err := os.Stat(path)
+	if err != nil {
+		return 0, 0, err
+	}
+	switch fileInfo.Sys().(type) {
+	case *syscall.Stat_t:
+		// Linux
+		info := fileInfo.Sys().(*syscall.Stat_t)
+		return info.Uid, info.Gid, nil
+
+	default:
+		return 0, 0, fmt.Errorf("Unsupported system type")
+	}
 }

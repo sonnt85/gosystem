@@ -146,6 +146,33 @@ func FileGetSize(filepath string) (int64, error) {
 	return fi.Size(), nil
 }
 
+func FileDirGetSize(filePath string) (int64, error) {
+	fi, err := os.Stat(filePath)
+	if err != nil {
+		return 0, err
+	}
+
+	if fi.IsDir() {
+		var size int64
+		err = filepath.Walk(filePath, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			if !info.IsDir() {
+				size += info.Size()
+			}
+			return nil
+		})
+		return size, err
+	}
+
+	if !fi.Mode().IsRegular() {
+		return 0, nil
+	}
+
+	return fi.Size(), nil
+}
+
 func FileIsText(filepath string) bool {
 	file, err := os.Open(filepath)
 	if err != nil {

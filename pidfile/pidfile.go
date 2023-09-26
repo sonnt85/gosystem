@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/sonnt85/gosystem"
 	"github.com/sonnt85/gsjson"
@@ -135,7 +136,7 @@ func NewPidfile(path string, passphrase []byte, progname string, removeIfFileInv
 		return
 	}
 	if len(path) == 0 {
-		path = filepath.Join(os.TempDir(), processName+".pid")
+		path = filepath.Join(os.TempDir(), strings.TrimSuffix(processName, filepath.Ext(processName))+".pid")
 		// f.RmdirFlag = true
 	}
 	// isrinning := PidFileIsRunning(path, passphrase, progname)

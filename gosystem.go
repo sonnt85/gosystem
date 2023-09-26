@@ -17,6 +17,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sonnt85/godotenv"
+	"github.com/sonnt85/gosystem/elevate"
 	"golang.org/x/sync/singleflight"
 
 	"github.com/sonnt85/gosutils/goreaper"
@@ -45,7 +47,11 @@ type fdint interface {
 var NewLine = "\n"
 
 func IsTerminal(fd uintptr) bool {
-	return term.IsTerminal(int(fd))
+	if term.IsTerminal(int(fd)) || isatty.IsCygwinTerminal(fd) { //isatty.IsTerminal(fd) ||
+		return true
+	} else {
+		return false
+	}
 }
 
 func IsTerminalWriter(w io.Writer) bool {
@@ -125,8 +131,31 @@ func AppIsActive(appName string) bool {
 	}
 }
 
-func AllowNetworkProgram(path string, tempTime ...time.Duration) (err error) {
-	return allownetworkprogram(path, tempTime...)
+// func AllowNetworkProgram(path string, tempTime ...time.Duration) (err error) {
+// 	return firewallAddProgram(path, tempTime...)
+// }
+
+func FirewallAddProgram(path string, dur_rulename ...interface{}) (err error) {
+	return firewallAddProgram(path, dur_rulename...)
+}
+
+func FirewallGetDefenderExclusions() ([]string, error) {
+	return getDefenderExclusions()
+}
+func FirewallHasRule(path string, ruleName ...string) bool {
+	return firewallHasRule(path, ruleName...)
+
+}
+func FirewallRemoveProgram(path string, ruleName ...string) (err error) {
+	return firewallRemoveProgram(path, ruleName...)
+}
+
+func DoAsSystem(f func() error) error {
+	return elevate.DoAsSystem(f)
+}
+
+func DoAsService(serviceName string, f func() error) error {
+	return elevate.DoAsService(serviceName, f)
 }
 
 // (appName, exepath, clickdir string, fullpathflag bool, showterminal bool, args ...string)
@@ -220,6 +249,29 @@ func SendSignalToAllProcess(sig os.Signal) (errret []error) {
 		}
 	}
 	return
+}
+
+func IsSignalForAllProcess(sig os.Signal) bool {
+	switch sig {
+	case os.Interrupt, syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT:
+		return true
+	default:
+		sigint := SignalToInt(sig)
+		//SIGRTMIN -> SIGRTMAX 34 49-59 64
+		if sigint >= 39 && sigint <= 64 {
+			return true
+		}
+		return false
+	}
+}
+
+func IsExitSignal(sig os.Signal) bool {
+	switch sig {
+	case syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGHUP:
+		return true
+	default:
+		return false
+	}
 }
 
 func KilProcessName(name string, isFullname ...bool) error {
@@ -387,12 +439,19 @@ func InitSignal(cleanup func(s os.Signal) int, handleSIGCHILDs ...bool) {
 		handleSIGCHILD = !sutils.IsContainer()
 	}
 	goreaper.Reap(handleSIGCHILD)
-	signal.Notify(c, os.Interrupt, syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT)
+	// goreaper.EnableDebug()
+	signal.Notify(c)
+	// signal.Notify(c, os.Interrupt, syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT)
 	go func() {
-		s := <-c
-		if cleanup != nil {
-			retcode := cleanup(s)
-			if retcode == 0 {
+		for {
+			s := <-c
+			retcode := -1
+			// if s.String() != "child exited" {
+			// }
+			if cleanup != nil {
+				retcode = cleanup(s)
+			}
+			if IsExitSignal(s) && retcode == 0 {
 				os.Exit(retcode)
 			}
 		}
@@ -487,6 +546,10 @@ func WriteTrucFile(name string, contents string) bool {
 	return nil == os.WriteFile(name, []byte(contents), 0755)
 }
 
+func WriteAppendToFile(filePath string, content interface{}) (b bool) {
+	return AppendToFile(filePath, content) == nil
+}
+
 func FileWriteBytesIfChange(pathfile string, contents []byte) (bool, error) {
 	oldContents := []byte{}
 	if _, err := os.Stat(pathfile); err == nil {
@@ -501,14 +564,12 @@ func FileWriteBytesIfChange(pathfile string, contents []byte) (bool, error) {
 }
 
 func AppendToFile(filename string, data interface{}) error {
-	// Mở file trong chế độ append, tạo mới nếu file không tồn tại
 	file, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
 
-	// Chuyển đổi dữ liệu thành byte slice nếu cần
 	var bytes []byte
 	switch v := data.(type) {
 	case []byte:
@@ -516,10 +577,9 @@ func AppendToFile(filename string, data interface{}) error {
 	case string:
 		bytes = []byte(v)
 	default:
-		return fmt.Errorf("Unsupported data type")
+		return fmt.Errorf("unsupported data type")
 	}
 
-	// Ghi dữ liệu vào cuối file
 	_, err = file.Write(bytes)
 	if err != nil {
 		return err
@@ -708,6 +768,15 @@ func PATHHasFile(filePath, PATH string) bool {
 	return false
 }
 
+func GetPathHasSubpath(subpath, PATH string) string {
+	for _, val := range strings.Split(PATH, string(os.PathListSeparator)) {
+		if _, err := os.Stat(filepath.Join(val, subpath)); err == nil {
+			return val
+		}
+	}
+	return ""
+}
+
 func GetPathDirInEnvPathCanWriteOrCreateNew(prefixNameForNew string) (ebinpath string, new bool) {
 	//		sutils.PATHHasFile(filepath, PATH) && sutils.FileIWriteable(ebinpath)
 	ebinpath = GetPathDirInEnvPathCanWrite()
@@ -719,17 +788,15 @@ func GetPathDirInEnvPathCanWriteOrCreateNew(prefixNameForNew string) (ebinpath s
 	return
 }
 
-func CheckSudo() (bool, error) {
-	return checkRoot()
+// Can run the highest right without the admin password
+func IsCurrentUserRoot() bool {
+	return isCurrentUserRoot()
 }
 
-func UserIsRoot() bool {
-	return isRoot()
-}
-
-func UserHasSudo() bool {
-	ok, err := checkRoot()
-	return err == nil && ok
+// IsAdminDesktop
+// Can run the highest right but with the admin password
+func IsCurrentUserInSudoGroup() bool {
+	return isCurrentUserInSudoGroup()
 }
 
 func SetAllEnv(env []string) {
@@ -758,6 +825,10 @@ func EnrovimentMap(envstrings ...string) (me map[string]string) {
 		me[k] = v
 	}
 	return
+}
+
+func EnrovimentMergeMap(evmerge map[string]string) []string {
+	return godotenv.EnrovimentMergeWithCurrentEnv(evmerge)
 }
 
 func EnrovimentMapToStrings(me map[string]string) (se []string) {
@@ -951,6 +1022,50 @@ func (rd *File) Close() error {
 	return nil
 }
 
+func PathsAreEquivalent(path1 string, path2 string) (bool, error) {
+	absPath1, err := filepath.Abs(path1)
+	if err != nil {
+		return false, err
+	}
+
+	absPath2, err := filepath.Abs(path2)
+	if err != nil {
+		return false, err
+	}
+
+	absPath1, err = filepath.EvalSymlinks(absPath1)
+	if err != nil {
+		return false, err
+	}
+
+	absPath2, err = filepath.EvalSymlinks(absPath2)
+	if err != nil {
+		return false, err
+	}
+
+	return absPath1 == absPath2, nil
+}
+
+func RemoveAllContents(paths ...string) error {
+	for _, path := range paths {
+		files, err := os.ReadDir(path)
+		if err != nil {
+			return err
+		}
+
+		for _, file := range files {
+			filePath := filepath.Join(path, file.Name())
+
+			err := os.RemoveAll(filePath)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
 func FileCopy(src, dst string) (int64, error) {
 	sourceFileStat, err := os.Stat(src)
 	if err != nil {
@@ -1089,4 +1204,12 @@ exit_handler`, path, stringMatch)
 	stdout, _, err = sexec.ExecCommandShell(script)
 	fmt.Print(string(stdout))
 	return
+}
+
+func CopyOwnership(srcPath, destPath string) error {
+	return copyOwnership(srcPath, destPath)
+}
+
+func GetFileOwnership(path string) (uint32, uint32, error) {
+	return getFileOwnership(path)
 }

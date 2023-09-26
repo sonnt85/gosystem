@@ -24,6 +24,7 @@ func isAdmin(token windows.Token) bool {
 	return isAdmin && err == nil
 }
 
+// Having admin rights but still need a password to hit [Linux similarly included in the Sudo Group, Windows in the Adminitrator group]
 func IsElevated() bool {
 	var processToken windows.Token
 	err := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_QUERY|windows.TOKEN_DUPLICATE, &processToken)
@@ -50,6 +51,7 @@ func TokenIsElevatedOrElevatable(token windows.Token) bool {
 	return linked.IsElevated() && isAdmin(linked)
 }
 
+// Have the highest right without asking the password
 func IsAdminDesktop() (bool, error) {
 	hwnd := windows.GetShellWindow()
 	if hwnd == 0 {
