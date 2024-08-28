@@ -2,8 +2,10 @@ package gosystem
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"os"
 	"os/exec"
@@ -11,17 +13,26 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	// _ "go.uber.org/automaxprocs"
+
+	"github.com/fsnotify/fsnotify"
 	"github.com/sonnt85/godotenv"
+	"github.com/sonnt85/gofilepath"
+	"github.com/sonnt85/gogmap"
 	"github.com/sonnt85/gosystem/elevate"
 	"golang.org/x/sync/singleflight"
 
 	"github.com/sonnt85/gosutils/goreaper"
+	"github.com/sonnt85/gosutils/hashmap"
+	"github.com/sonnt85/gosutils/ppjson"
+	"github.com/sonnt85/gosutils/sregexp"
 
 	"github.com/mattn/go-isatty"
 	"github.com/shirou/gopsutil/process"
@@ -234,10 +245,161 @@ func GetProcessFromPid(pidi interface{}) (p *process.Process) {
 	return
 }
 
-func SendSignalToAllProcess(sig os.Signal) (errret []error) {
-	processList, err := process.Processes()
+// ProcessNode định nghĩa một node trong process tree
+type ProcessNode struct {
+	PID      int32
+	Children []*ProcessNode
+}
+
+// GetProcessTree builds a process tree from a PID
+func GetPocessTree(pid int32) (*ProcessNode, error) {
+	proc, err := process.NewProcess(pid)
 	if err != nil {
-		return []error{err}
+		return nil, err
+	}
+	node := &ProcessNode{PID: pid}
+
+	children, err := proc.Children()
+	if err != nil {
+		if err != process.ErrorNoChildren {
+			return nil, err
+		}
+	}
+
+	for _, child := range children {
+		childNode, err := GetPocessTree(child.Pid)
+		if err != nil {
+			return nil, err
+		}
+		node.Children = append(node.Children, childNode)
+	}
+
+	return node, nil
+}
+
+// findAllDescendantPIDs finds all descendant PIDs of the rootPID
+func GetAllDescendantPIDs(rootPID int32, includeRootPid ...bool) ([]int32, error) {
+	descendants := []int32{}
+	if len(includeRootPid) > 0 && includeRootPid[0] {
+		descendants = append(descendants, rootPID)
+	}
+	queue := []int32{rootPID}
+
+	for len(queue) > 0 {
+		currentPID := queue[0]
+		queue = queue[1:]
+
+		proc, err := process.NewProcess(currentPID)
+		if err != nil {
+			return nil, err
+		}
+
+		children, err := proc.Children()
+		if err != nil && err != process.ErrorNoChildren {
+			return nil, err
+		}
+
+		for _, child := range children {
+			descendants = append(descendants, child.Pid)
+			queue = append(queue, child.Pid)
+		}
+	}
+
+	return descendants, nil
+}
+
+// findAllDescendantPIDs finds all descendant PIDs of the rootPID
+func GetAllDescendantProcesses(rootPID int32, includeRootPid ...bool) ([]*process.Process, error) {
+	descendants := []*process.Process{}
+	if len(includeRootPid) > 0 && includeRootPid[0] {
+		p, err := process.NewProcess(rootPID)
+		if err != nil {
+			return nil, err
+		}
+		descendants = append(descendants, p)
+	}
+	queue := []int32{rootPID}
+
+	for len(queue) > 0 {
+		currentPID := queue[0]
+		queue = queue[1:]
+
+		proc, err := process.NewProcess(currentPID)
+		if err != nil {
+			return nil, err
+		}
+
+		children, err := proc.Children()
+		if err != nil && err != process.ErrorNoChildren {
+			return nil, err
+		}
+
+		for _, child := range children {
+			descendants = append(descendants, child)
+			queue = append(queue, child.Pid)
+		}
+	}
+
+	return descendants, nil
+}
+
+func KillProcessTree(rootPID int32, signals ...os.Signal) (errret error) {
+	var descendantPIDs []int32
+	var err error
+	currentPid := int32(os.Getegid())
+	descendantPIDs, err = GetAllDescendantPIDs(rootPID)
+	if err != nil {
+		return err
+	}
+	sig := syscall.Signal(syscall.SIGTERM)
+	if len(signals) > 0 {
+		sig = syscall.Signal(signals[0].(syscall.Signal))
+	}
+	var process *os.Process
+	for i := len(descendantPIDs) - 1; i >= 0; i-- {
+		pid := descendantPIDs[i]
+		process, err = os.FindProcess(int(pid))
+		if err != nil {
+			continue
+		}
+		if currentPid != pid {
+			if err = process.Signal(sig); err != nil {
+				errret = errors.Join(errret, err)
+			}
+		}
+	}
+	var rootProcess *os.Process
+	rootProcess, err = os.FindProcess(int(rootPID))
+	if err == nil {
+		rootProcess.Signal(syscall.SIGTERM)
+		// fmt.Printf("Killed root process with PID %d\n", rootPID)
+	} else {
+		errret = errors.Join(errret, err)
+	}
+	return
+}
+
+// printProcessTree in cây process
+func PrintProcessTree(node *ProcessNode, prefix string) {
+	fmt.Printf("%s%d\n", prefix, node.PID)
+	for _, child := range node.Children {
+		PrintProcessTree(child, prefix+"  ")
+	}
+}
+
+func SendSignalToAllProcess(sig os.Signal, parrentpid ...int) (errret []error) {
+	var processList []*process.Process
+	var err error
+	if len(parrentpid) > 0 {
+		processList, err = GetAllDescendantProcesses(int32(parrentpid[0]), true)
+		if err != nil {
+			return []error{err}
+		}
+	} else {
+		processList, err = process.Processes()
+		if err != nil {
+			return []error{err}
+		}
 	}
 	sigcall := syscall.Signal(sig.(syscall.Signal))
 	for _, p := range processList {
@@ -265,6 +427,9 @@ func IsSignalForAllProcess(sig os.Signal) bool {
 	}
 }
 
+func GetKillSignal() os.Signal {
+	return syscall.SIGKILL
+}
 func IsExitSignal(sig os.Signal) bool {
 	switch sig {
 	case syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGHUP:
@@ -430,6 +595,16 @@ func SignalToInt(s os.Signal) int {
 	return 0
 }
 
+var exitFuncs = make([]func(...interface{}), 0)
+
+func TrapExitAdd(f func(...interface{})) {
+	if f != nil {
+		exitFuncs = append(exitFuncs, func(args ...interface{}) {
+			f(args...)
+		})
+	}
+}
+
 func InitSignal(cleanup func(s os.Signal) int, handleSIGCHILDs ...bool) {
 	c := make(chan os.Signal, 1)
 	var handleSIGCHILD bool
@@ -452,6 +627,11 @@ func InitSignal(cleanup func(s os.Signal) int, handleSIGCHILDs ...bool) {
 				retcode = cleanup(s)
 			}
 			if IsExitSignal(s) && retcode == 0 {
+				for _, f := range exitFuncs {
+					if f != nil {
+						f()
+					}
+				}
 				os.Exit(retcode)
 			}
 		}
@@ -542,10 +722,13 @@ func TouchFile(name string) error {
 	//	return nil
 }
 
-func WriteTrucFile(name string, contents string) bool {
-	return nil == os.WriteFile(name, []byte(contents), 0755)
+func WriteTrucFile(name string, contents interface{}) bool {
+	// return nil == os.WriteFile(name, []byte(contents), 0755)
+	return WriteToFile(name, os.O_TRUNC|os.O_CREATE|os.O_WRONLY, contents) == nil
+
 }
 
+// data are string, []byte, io.Reader
 func WriteAppendToFile(filePath string, content interface{}) (b bool) {
 	return AppendToFile(filePath, content) == nil
 }
@@ -564,23 +747,33 @@ func FileWriteBytesIfChange(pathfile string, contents []byte) (bool, error) {
 }
 
 func AppendToFile(filename string, data interface{}) error {
-	file, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	return WriteToFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, data)
+}
+
+// data are string, []byte, io.Reader
+func WriteToFile(filename string, flag int, data interface{}, perms ...fs.FileMode) error {
+	perm := fs.FileMode(0644)
+	if len(perms) != 0 {
+		perm = perms[0]
+	}
+	file, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, perm)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
-
-	var bytes []byte
+	var r io.Reader
 	switch v := data.(type) {
 	case []byte:
-		bytes = v
+		r = bytes.NewBuffer(v)
 	case string:
-		bytes = []byte(v)
+		r = bytes.NewBufferString(v)
+	case io.Reader:
+		r = v
 	default:
 		return fmt.Errorf("unsupported data type")
 	}
-
-	_, err = file.Write(bytes)
+	_, err = io.Copy(file, r)
+	// _, err = file.Write(bytes)
 	if err != nil {
 		return err
 	}
@@ -589,12 +782,12 @@ func AppendToFile(filename string, data interface{}) error {
 }
 
 func GetHomeDir() (home string) {
-	home, err := HomeDir() // os.UserHomeDir()
-	if err == nil {
-		return home
-	} else {
-		return ""
+	if cuser, err := user.Current(); err == nil {
+		home = cuser.HomeDir
+	} else if homet, err := HomeDir(); err == nil {
+		home = homet
 	}
+	return
 }
 
 func GetWorkingDir() (wdir string) {
@@ -740,6 +933,7 @@ func GetPathDirInEnvPathCanWrite() (ebinpath string) {
 }
 
 func PathIsDir(path string) bool {
+	return gofilepath.PathIsDir(path)
 	if finfo, err := os.Stat(path); err == nil {
 		if finfo.IsDir() {
 			return true
@@ -749,6 +943,7 @@ func PathIsDir(path string) bool {
 }
 
 func PathIsFile(path string) bool {
+	return gofilepath.PathIsFile(path)
 	if finfo, err := os.Stat(path); err == nil {
 		if !finfo.IsDir() {
 			return true
@@ -865,6 +1060,12 @@ func EnrovimentMergeCurrentEnv(envMap map[string]string) (senv []string) {
 	return
 }
 
+func EnrovimentMergeCurrentEnvToMap(envMap map[string]string) (me map[string]string) {
+	mes := EnrovimentMergeCurrentEnv(envMap)
+	return EnrovimentMap(mes...)
+
+}
+
 func IsDoubleClickRun() bool {
 	return isDoubleClickRun()
 }
@@ -969,17 +1170,174 @@ func TempFileCreateWithContent(data []byte, prefix ...string) string {
 	}
 }
 
-func Symlink(src, dst string) error {
-	return symlink(src, dst)
+// Symlink creates newname as a symbolic link to oldname.
+// On Windows, a symlink to a non-existent oldname creates a file symlink;
+// if oldname is later created as a directory the symlink will not work.
+// If there is an error, it will be of type *LinkError.
+
+func Symlink(oldname, newname string) error {
+	return symlink(oldname, newname)
 }
 
-func SymlinkRel(src, dst string) error {
-	relativePath, err := filepath.Rel(filepath.Dir(dst), src)
+func SymlinkRel(oldname, newname string) error {
+	relativePath, err := filepath.Rel(filepath.Dir(newname), oldname)
 	if err != nil {
 		return err
 	}
-	err = Symlink(relativePath, dst)
+	if b, _ := gofilepath.PathsPointToSameFile(oldname, newname); b {
+		return nil
+	}
+	err = Symlink(relativePath, newname)
 	return err
+}
+
+func SymlinkRelWithInit(oldname, newname string, force bool, dstisfile bool) (msgs string, err error) {
+	var b bool
+	var msg []string
+	defer func() {
+		if len(msg) != 0 {
+			msgs = ppjson.ToString(msg, true)
+		}
+		// else {
+		// 	msgs = fmt.Sprintf("Exit SymlinkRelWithInit %s %s %t %t", oldname, newname, force, dstisfile)
+		// }
+	}()
+	if b, _ = gofilepath.PathsPointToSameFile(oldname, newname); b && gofilepath.PathIsSymlink(newname) {
+		msg = append(msg, fmt.Sprintf("Created symlink before [%s -> %s]", newname, oldname))
+		return
+	}
+	if gofilepath.PathIsFile(newname) || gofilepath.PathIsFile(oldname) {
+		dstisfile = true
+	}
+	if gofilepath.PathIsExist(newname) || gofilepath.PathIsExist(oldname) {
+		force = true
+	}
+
+	if (PathIsExist(newname) && !gofilepath.PathIsSymlink(newname)) || force { //!PathIsExist(oldname)
+		os.MkdirAll(filepath.Dir(oldname), 0x755)
+		if dstisfile { // file
+			if PathIsFile(newname) {
+				msg = append(msg, fmt.Sprintf("Move file from '%s' -> '%s'", newname, oldname))
+				FileMove(newname, oldname)
+			} else {
+				if !PathIsFile(oldname) {
+					msg = append(msg, fmt.Sprintf("Force create target file '%s'", oldname))
+					TouchFile(oldname)
+				}
+			}
+		} else {
+			if !PathIsDir(oldname) {
+				msg = append(msg, fmt.Sprintf("Force create target directory '%s'", oldname))
+				os.Mkdir(oldname, 0755)
+			}
+		}
+
+		lockSufix := ".slocked"
+		locked := false
+		if PathIsExist(oldname) {
+			newnameDir := filepath.Dir(newname)
+			oldnameDir := filepath.Dir(oldname)
+			srcchange := false
+			oldnameBase := filepath.Base(oldname)
+			if !PathIsExist(newnameDir) {
+				msg = append(msg, fmt.Sprintf("Create new parrent' source (symbolic link) dirs '%s'", newnameDir))
+				os.MkdirAll(newnameDir, 0x755)
+			}
+			if b, _ = gofilepath.PathsPointToSameFile(oldname, newname); b && gofilepath.PathIsSymlink(newname) {
+				msg = append(msg, fmt.Sprintf("Created symlink before [%s -> %s]", newname, oldname))
+				return
+			}
+			var lockfile string
+
+			if PathIsDir(newname) {
+				lockfile = filepath.Join(oldname, lockSufix)
+				if PathIsFile(lockfile) {
+					locked = true
+					if PathIsExist(newname) {
+						msg = append(msg, fmt.Sprintf("Locked target %s, remove all target %s", lockfile, oldname))
+						os.RemoveAll(newname)
+					}
+				}
+				lockfile = filepath.Join(newname, lockSufix)
+				if PathIsFile(lockfile) {
+					locked = true
+					srcchange = true
+					msg = append(msg, fmt.Sprintf("Locked source (symbolic link) %s, remove all dst %s", lockfile, newname))
+					// # rsync -aX --delete-after --inplace --no-whole-file --exclude .slocked "${line[1]}/" "${line[0]}}/"
+					// os.RemoveAll(oldname)
+					// exec.Command("rm", "--one-file-system", "-rf", oldname).Run()
+					if o, e := exec.Command("rm", "--one-file-system", "-rf", oldname).CombinedOutput(); e != nil {
+						msg = append(msg, fmt.Sprintf("can not remove  data %s %s", o, e.Error()))
+						return
+					}
+					if e := os.Rename(newname, oldname); e != nil {
+
+					}
+				}
+				if !locked && PathIsExist(newname) {
+					msg = append(msg, fmt.Sprintf("Merge data %s to %s", newname, oldname))
+					//  cp -xuarf "${line[1]}/."  "${line[0]}/"
+					if o, e := exec.Command("cp", "-xuarf", newname+string(os.PathSeparator)+".", oldname+string(os.PathSeparator)).CombinedOutput(); e != nil {
+						msg = append(msg, fmt.Sprintf("can not merge data %s %s", o, e.Error()))
+						return
+					}
+					// os.RemoveAll(newname)
+					if o, e := exec.Command("rm", "--one-file-system", "-rf", newname).CombinedOutput(); e != nil {
+						msg = append(msg, fmt.Sprintf("can not remove  data %s %s", o, e.Error()))
+						return
+					}
+					srcchange = true
+				}
+
+			} else if gofilepath.PathIsFile(newname) { //file
+				lockfile = filepath.Join(oldnameDir, "."+oldnameBase+lockSufix)
+				if PathIsFile(lockfile) {
+					locked = true
+					msg = append(msg, fmt.Sprintf("Locked target %s, remove all target %s", lockfile, newname))
+
+					// rm -f "${line[1]}"
+					os.Remove(newname)
+
+				}
+				lockfile = filepath.Join(newnameDir, "."+oldnameBase+lockSufix)
+				if PathIsFile(lockfile) {
+					locked = true
+					srcchange = true
+					msg = append(msg, fmt.Sprintf("Locked source (symbolic link) %s, remove all dst %s", lockfile, oldname))
+					os.Remove(oldname)
+					os.Rename(newname, oldname)
+				}
+
+				if !locked {
+					srcchange = true
+					os.Rename(newname, oldname)
+				}
+			}
+
+			if gofilepath.PathIsSymlink(newname) {
+				srcsym, _ := os.Readlink(newname)
+				msg = append(msg, fmt.Sprintf("Delete broken symbolic link %s [ -> %s]", newname, srcsym))
+				os.Remove(newname)
+			}
+			if err = SymlinkRel(oldname, newname); err == nil {
+				lockfile = filepath.Join(oldnameDir, "."+oldnameBase+lockSufix)
+				if PathIsDir(oldname) {
+					lockfile = filepath.Join(oldname, lockSufix)
+				}
+				if srcchange || !PathIsExist(lockfile) {
+					msg = append(msg, fmt.Sprintf("Source data  %s is changed", oldname))
+					FileWriteBytesIfChange(lockfile, []byte(time.Now().String()))
+				}
+			}
+		} else {
+			err = fmt.Errorf("path '%s' path does not exist", oldname)
+		}
+	}
+	//else {
+	// 	msg = append(msg, fmt.Sprintf("Nothing trigger creates symlink '%s' -> '%s'", newname, oldname))
+	// }
+
+	return
 }
 
 type File struct {
@@ -1103,6 +1461,13 @@ func FileCopy(src, dst string) (int64, error) {
 	return nBytes, err
 }
 
+func FileMove(src, dst string) (bytesmoved int64, err error) {
+	if bytesmoved, err = FileCopy(src, dst); err == nil {
+		err = os.Remove(src)
+	}
+	return
+}
+
 func FileCopyIfDiff(src, dst string) (int64, error) {
 	if b, _ := FilesIsEqual(src, dst); b {
 		return 0, nil
@@ -1212,4 +1577,205 @@ func CopyOwnership(srcPath, destPath string) error {
 
 func GetFileOwnership(path string) (uint32, uint32, error) {
 	return getFileOwnership(path)
+}
+
+type Watcher struct {
+	*fsnotify.Watcher
+	listPause *hashmap.MapEmpty[string]
+	mapDirs   *gogmap.GlobalMap[[]string]
+	// pause     bool
+}
+
+func matchRegex(files []string, basename string) bool {
+	for _, v := range files {
+		if strings.HasPrefix(v, "~") {
+			if sregexp.New(strings.TrimPrefix(v, "~")).MatchString(basename) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// WatchConfig starts watching a config file for changes.
+func FsnotifyChange(onConfigChange func(e fsnotify.Event), pauseWatchWhenCallBack bool, filesname ...string) (watcher *Watcher) {
+	initWG := sync.WaitGroup{}
+	initWG.Add(1)
+	fsw, err := fsnotify.NewWatcher()
+	if err != nil {
+		return nil
+	}
+	watcher = &Watcher{
+		Watcher:   fsw,
+		listPause: hashmap.NewMapEmpty[string](len(filesname)),
+	}
+	// watcher.listPause = hashmap.NewMapEmpty[string](len(filesname))
+
+	// filename := filesname[0]
+	// dirsPause := hashmap.NewMapEmpty[string](len(filesname))
+	watcher.mapDirs = gogmap.NewGlobalMap[[]string]()
+	for _, v := range filesname {
+		isDir := strings.HasSuffix(v, string(os.PathSeparator)) || gofilepath.PathIsDir(v) || gofilepath.PathIsSymlinkDir(v)
+		v = filepath.Clean(v)
+		if isDir { // dir
+			v = strings.TrimRight(v, string(os.PathSeparator))
+			if val, ok := watcher.mapDirs.GetVal(v); !ok {
+				watcher.mapDirs.Set(v, []string{""})
+			} else {
+				val = append(val, "")
+				sutils.UniqueSlide(&val)
+				watcher.mapDirs.Set(v, val)
+			}
+		} else { //v
+			configParrDir, fname := filepath.Split(v)
+			configParrDir = strings.TrimRight(configParrDir, string(os.PathSeparator))
+			fileVal := v
+			// mapDirs.Set(configDir, realConfigFile)
+			if strings.HasPrefix(fname, "~") {
+				fileVal = fname
+			}
+			if val, ok := watcher.mapDirs.GetVal(configParrDir); !ok {
+				watcher.mapDirs.Set(configParrDir, []string{fileVal})
+			} else {
+				val = append(val, fileVal)
+				sutils.UniqueSlide(&val)
+				watcher.mapDirs.Set(configParrDir, val)
+			}
+		}
+	}
+	go func() {
+
+		go func() {
+			defer watcher.Close()
+			for {
+				select {
+				case event, ok := <-watcher.Events:
+					if !ok { // 'Events' channel is closed
+						return
+					}
+					eventNameRealConfigFile := filepath.Clean(event.Name)
+					if watcher.listPause.Contains(eventNameRealConfigFile) {
+						continue
+					}
+					configDir, bname := filepath.Split(eventNameRealConfigFile)
+					configDir = strings.TrimRight(configDir, string(os.PathSeparator))
+
+					configFiles, okEle := watcher.mapDirs.GetVal(configDir)
+
+					if !okEle {
+						continue
+					}
+
+					// currentConfigFile, _ := filepath.EvalSymlinks(eventNameCleaned)
+					// we only care about the config file with the following cases:
+					// 1 - if the config file was modified or created
+					// 2 - if the real path to the config file changed (eg: k8s ConfigMap replacement)
+					if (sutils.SlideHasElement(configFiles, "") || matchRegex(configFiles, bname) || sutils.SlideHasElement(configFiles, eventNameRealConfigFile)) &&
+						(event.Has(fsnotify.Write) || event.Has(fsnotify.Create)) {
+						if onConfigChange != nil {
+							if pauseWatchWhenCallBack {
+								watcher.Pause(configDir)
+							}
+							onConfigChange(event)
+							if pauseWatchWhenCallBack {
+								watcher.Continue(configDir)
+							}
+						}
+					} else if event.Has(fsnotify.Remove) && sutils.SlideHasElement(configFiles, eventNameRealConfigFile) {
+						// removeList.Set(configDir, struct{}{})
+						// eventsWG.Done()
+						continue // return
+					}
+
+				case err, ok := <-watcher.Errors:
+					if ok { // 'Errors' channel is not closed
+						err = fmt.Errorf(fmt.Sprintf("watcher error: %s", err))
+					}
+
+					// eventsWG.Done()
+					// eventsWG.ResetCount()
+					continue //return
+				}
+			}
+		}()
+		go func() {
+			for {
+				for dir, _ := range watcher.mapDirs.Map() {
+					if gofilepath.PathIsExist(dir) && !watcher.listPause.Contains(dir) {
+						if !sutils.SlideHasElementInStrings(watcher.WatchList(), dir) {
+							watcher.Add(dir)
+						}
+					}
+				}
+				time.Sleep(time.Second * 5)
+			}
+		}()
+		initWG.Done() // done initializing the watch in this go routine, so the parent routine can move on...
+	}()
+	initWG.Wait() // make sure that the go routine above fully ended before returning
+	return
+}
+
+func (watcher *Watcher) Pause(filePath ...string) {
+	for dir, _ := range watcher.mapDirs.Map() {
+		if len(filePath) == 0 {
+			watcher.listPause.Add(dir)
+			watcher.Remove(dir)
+		} else {
+			for _, path := range filePath {
+				path = filepath.Clean(path)
+				path = strings.TrimRight(path, string(os.PathSeparator))
+				if path == dir { //dir
+					watcher.Remove(dir)
+				}
+				watcher.listPause.Add(path)
+			}
+		}
+	}
+}
+
+func (watcher *Watcher) Continue(filePath ...string) {
+	for dir, _ := range watcher.mapDirs.Map() {
+		if len(filePath) == 0 {
+			watcher.listPause.Remove(dir)
+		} else {
+			for _, v1 := range filePath {
+				v1 = filepath.Clean(v1)
+				v1 = strings.TrimRight(v1, string(os.PathSeparator))
+				if v1 == dir {
+					watcher.Add(dir)
+				}
+				watcher.listPause.Remove(v1)
+			}
+		}
+	}
+}
+
+func GetBuildTags() (tags []string) {
+	tags = make([]string, 0)
+	binfo, _ := debug.ReadBuildInfo()
+	for _, v := range binfo.Settings {
+		if v.Key == "-tags" && v.Value != "" {
+			tags = append(tags, strings.Split(v.Value, ",")...)
+		}
+	}
+	return
+}
+
+func BuildHasTags(tags ...string) bool {
+	for _, v := range GetBuildTags() {
+		if sutils.SlideHasElement(GetBuildTags(), v) {
+			return true
+		}
+	}
+	return false
+}
+
+func GetRuntimeCallerInformation() string {
+	pc, file, line, ok := runtime.Caller(1)
+	if !ok {
+		return ""
+	}
+	functionName := runtime.FuncForPC(pc).Name()
+	return fmt.Sprintf("%s:%s:%d", file, functionName, line)
 }

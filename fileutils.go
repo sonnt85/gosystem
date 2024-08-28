@@ -1,12 +1,14 @@
 package gosystem
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"time"
 
 	"github.com/sonnt85/gosutils/sutils"
@@ -197,6 +199,61 @@ func FileIsText(filepath string) bool {
 		}
 	}
 	// return false
+}
+
+func FileIsTextAndHasRegexp(file io.ReadSeeker, pattern string) bool {
+	// defer file.Close()
+	// var r io.Reader
+	// switch v := filepath.(type) {
+	// case []byte:
+	// 	r = bytes.NewBuffer(v)
+	// case string:
+	// 	r = bytes.NewBufferString(v)
+	// case io.Reader:
+	// 	r = v
+	// default:
+	// 	return false
+	// }
+	defer file.Seek(0, 0)
+	bufferSize := 1024 // Kích thước của mỗi mảng byte
+	for {
+		buffer := make([]byte, bufferSize)
+		n, err := file.Read(buffer)
+		if n > 0 {
+			for _, b := range buffer[:n] {
+				if (b < 0x20 || b > 0x7e) && b != '\n' && b != '\r' && b != '\t' {
+					// fmt.Print(b)
+					return false
+				}
+			}
+		}
+		if err != nil {
+			if err == io.EOF {
+				file.Seek(0, 0)
+				scanner := bufio.NewScanner(file)
+				if re, e := regexp.Compile(pattern); e == nil {
+					for scanner.Scan() {
+						line := scanner.Text()
+						if re.MatchString(line) {
+							return true
+						}
+					}
+				}
+				// sregexp.New(pattern)
+			}
+			return false
+		}
+	}
+	// return false
+}
+
+func BytesIsText(buffer []byte) bool {
+	for _, b := range buffer {
+		if (b < 0x20 || b > 0x7e) && b != '\n' && b != '\r' && b != '\t' {
+			return false
+		}
+	}
+	return true
 }
 
 func MonitorMaxFilesSize(logDir string, maxsize int64, delFlag ...bool) {
