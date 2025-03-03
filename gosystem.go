@@ -35,7 +35,7 @@ import (
 	"github.com/sonnt85/gosutils/sregexp"
 
 	"github.com/mattn/go-isatty"
-	"github.com/shirou/gopsutil/process"
+	"github.com/shirou/gopsutil/v4/process"
 	"github.com/sonnt85/gosutils/cmdshellwords"
 	"github.com/sonnt85/gosutils/goacl"
 	"github.com/sonnt85/gosutils/sexec"
@@ -231,11 +231,16 @@ func GetProcessFromPid(pidi interface{}) (p *process.Process) {
 		pid = int(v)
 	case int64:
 		pid = int(v)
+	case uint64:
+		pid = int(v)
 	case string:
 		if pid, err = strconv.Atoi(v); err != nil {
 			return
 		}
 	case int32:
+		pid = int(v)
+	case uint32:
+		pid = int(v)
 	default:
 		return nil
 	}
@@ -243,6 +248,15 @@ func GetProcessFromPid(pidi interface{}) (p *process.Process) {
 		return
 	}
 	return
+}
+
+func GetProcessNameFromPid(pidi interface{}) string {
+	if p := GetProcessFromPid(pidi); p != nil {
+		if pname, err := p.Name(); err == nil {
+			return pname
+		}
+	}
+	return ""
 }
 
 // ProcessNode định nghĩa một node trong process tree
@@ -291,7 +305,8 @@ func GetAllDescendantPIDs(rootPID int32, includeRootPid ...bool) ([]int32, error
 
 		proc, err := process.NewProcess(currentPID)
 		if err != nil {
-			return nil, err
+			continue
+			// return nil, err
 		}
 
 		children, err := proc.Children()
@@ -306,6 +321,84 @@ func GetAllDescendantPIDs(rootPID int32, includeRootPid ...bool) ([]int32, error
 	}
 
 	return descendants, nil
+}
+
+func GetAllAncestorProcesses(rootPID int32, includeRootPid ...bool) ([]*process.Process, error) {
+	ancestors := []*process.Process{}
+	if len(includeRootPid) > 0 && includeRootPid[0] {
+		p, err := process.NewProcess(rootPID)
+		if err != nil {
+			return nil, err
+		}
+		ancestors = append(ancestors, p)
+	}
+	queue := []int32{rootPID}
+
+	for len(queue) > 0 {
+		currentPID := queue[0]
+		if currentPID == 1 {
+			break
+		}
+		queue = queue[1:]
+
+		proc, err := process.NewProcess(currentPID)
+		if err != nil {
+			return nil, err
+		}
+
+		parent, err := proc.Parent()
+		if err != nil {
+			// if err == process.ErrorNoParent {
+			// 	continue
+			// }
+			return nil, err
+			// return ancestors, nil
+		}
+
+		ancestor, err := process.NewProcess(parent.Pid)
+		if err != nil {
+			return nil, err
+		}
+
+		ancestors = append(ancestors, ancestor)
+		queue = append(queue, parent.Pid)
+	}
+
+	return ancestors, nil
+}
+
+// GetAllAncestorPIDs finds all ancestor PIDs of the rootPID
+func GetAllAncestorPIDs(rootPID int32, includeRootPid ...bool) ([]int32, error) {
+	ancestors := []int32{}
+	if len(includeRootPid) > 0 && includeRootPid[0] {
+		ancestors = append(ancestors, rootPID)
+	}
+	queue := []int32{rootPID}
+
+	for len(queue) > 0 {
+		currentPID := queue[0]
+		queue = queue[1:]
+		if currentPID == 1 {
+			break
+		}
+		proc, err := process.NewProcess(currentPID)
+		if err != nil {
+			return nil, err
+		}
+
+		parent, err := proc.Parent()
+		if err != nil {
+			// if err == process.ErrorNoParent {
+			// 	continue
+			// }
+			return nil, err
+		}
+
+		ancestors = append(ancestors, parent.Pid)
+		queue = append(queue, parent.Pid)
+	}
+
+	return ancestors, nil
 }
 
 // findAllDescendantPIDs finds all descendant PIDs of the rootPID
@@ -547,7 +640,11 @@ func ProcessesPids(names ...string) (pids []int) {
 }
 
 func ProcessesOfPid(pid int32) (p *process.Process) {
-	p, _ = process.NewProcess(pid) // Specify process id of parent ;
+	var err error
+	p, err = process.NewProcess(pid) // Specify process id of parent ;
+	if err != nil {
+		p = nil
+	}
 	return p
 }
 
@@ -626,13 +723,15 @@ func InitSignal(cleanup func(s os.Signal) int, handleSIGCHILDs ...bool) {
 			if cleanup != nil {
 				retcode = cleanup(s)
 			}
-			if IsExitSignal(s) && retcode == 0 {
+			if IsExitSignal(s) {
 				for _, f := range exitFuncs {
 					if f != nil {
 						f()
 					}
 				}
-				os.Exit(retcode)
+				if retcode == 0 {
+					os.Exit(retcode)
+				}
 			}
 		}
 	}()
@@ -1771,11 +1870,27 @@ func BuildHasTags(tags ...string) bool {
 	return false
 }
 
-func GetRuntimeCallerInformation() string {
-	pc, file, line, ok := runtime.Caller(1)
+func GetRuntimeCallerInformation(skip ...int) string {
+	skipNum := 1
+	if len(skip) != 0 {
+		skipNum = skip[0]
+	}
+	pc, file, line, ok := runtime.Caller(skipNum)
 	if !ok {
 		return ""
 	}
 	functionName := runtime.FuncForPC(pc).Name()
 	return fmt.Sprintf("%s:%s:%d", file, functionName, line)
+}
+
+func GetRuntimeCallerFuncName(skip ...int) string {
+	skipNum := 1
+	if len(skip) != 0 {
+		skipNum = skip[0]
+	}
+	pc, _, _, ok := runtime.Caller(skipNum)
+	if !ok {
+		return ""
+	}
+	return runtime.FuncForPC(pc).Name()
 }
