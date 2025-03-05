@@ -523,6 +523,23 @@ func IsSignalForAllProcess(sig os.Signal) bool {
 func GetKillSignal() os.Signal {
 	return syscall.SIGKILL
 }
+
+func SendSignalToSelf(sig os.Signal) error {
+	p, err := os.FindProcess(os.Getpid())
+	if err != nil {
+		return err
+	}
+	return p.Signal(sig)
+}
+
+func Terminate() error {
+	p, err := os.FindProcess(os.Getpid())
+	if err != nil {
+		return err
+	}
+	return p.Signal(syscall.SIGTERM)
+}
+
 func IsExitSignal(sig os.Signal) bool {
 	switch sig {
 	case syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGHUP:
