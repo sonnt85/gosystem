@@ -1,5 +1,7 @@
 # gosystem
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/sonnt85/gosystem.svg)](https://pkg.go.dev/github.com/sonnt85/gosystem)
+
 Cross-platform system utilities for Go — process management, file operations, environment handling, privilege elevation, filesystem watching, terminal detection, and PID files.
 
 ## Installation
@@ -62,13 +64,18 @@ pidfile, err := pidfile.NewPidfile("", nil, "myapp", false)
 - `GetProcessFromPid(pidi interface{}) *process.Process`
 - `GetProcessNameFromPid(pidi interface{}) string`
 - `Processes(names ...string) ([]*process.Process, error)` — list/filter by name
+- `ProcessesPids(names ...string) []int` — PIDs of matching processes
+- `ProcessesOfPid(pid int32) *process.Process` — get process struct for a PID
 - `Pgrep(names ...string) []*process.Process` / `PgrepWithEnv(name, key, val string)`
 - `KillPid(pidi interface{}) error` / `KillProcessName(name string, isFullname ...bool) error`
 - `KillProcessTree(rootPID int32, signals ...os.Signal) error`
 - `GetProcessTree(pid int32) (*ProcessNode, error)` / `PrintProcessTree(node, prefix)`
 - `GetAllDescendantPIDs(rootPID int32, ...) ([]int32, error)`
 - `GetAllAncestorPIDs(rootPID int32, ...) ([]int32, error)`
+- `GetMapPidsOpenFile(filePath string) map[int]string` — map of PID → process name for all processes that have the file open
 - `SendSignalToAllProcess(sig os.Signal, parentPID ...int) []error`
+- `IsSignalForAllProcess(sig os.Signal) bool` — check if signal targets the entire process group
+- `GetKillSignal() os.Signal` — return the platform-appropriate kill signal
 - `SendSignalToSelf(sig os.Signal) error` / `Terminate() error`
 
 ### Signals
@@ -81,16 +88,32 @@ pidfile, err := pidfile.NewPidfile("", nil, "myapp", false)
 
 - `FileCopy(src, dst string) (int64, error)` / `FileMove(src, dst string) (int64, error)`
 - `FileCopyIfDiff(src, dst string) (int64, error)` / `FilesIsEqual(f1, f2 string) (bool, error)`
+- `FileCloneDate(dst, src string) bool` — copy file timestamps from src to dst
+- `FileGetSize(filepath string) (int64, error)` — size of a file in bytes
+- `FileDirGetSize(filePath string) (int64, error)` — total size of a directory tree
+- `FileIsText(filepath string) bool` — detect whether a file contains text (not binary)
 - `FileWriteBytesIfChange(path string, contents []byte) (bool, error)`
 - `WriteToFile(filename string, flag int, data interface{}, perms ...fs.FileMode) error`
 - `AppendToFile(filename string, data interface{}) error`
 - `WriteTrucFile(name string, contents interface{}) bool`
 - `WriteToFileWithLockSFL(filePath string, data interface{}, truncs ...bool) error`
 - `TouchFile(name string) error`
+- `TempFileCreate(prefix ...string) string` — create a temporary file, return its path
+- `TempFileCreateWithContent(data []byte, prefix ...string) string` — create temp file with content
+- `TempFileCreateInNewTemDir(filename string, prefix ...string) string` — create temp file in a new temp directory
+- `TempFileCreateInNewTemDirWithContent(filename string, data []byte, prefix ...string) string` — create temp file with content in a new temp directory
+- `OpenFile(filePath string, bufsize ...int) (*File, error)` — open a file returning a pool-buffered `*File`
 - `Symlink(old, new string) error` / `SymlinkRel(old, new string) error`
 - `SymlinkRelWithInit(old, new string, force, dstIsFile bool) (string, error)`
 - `RemoveAllContents(paths ...string) error`
 - `CopyOwnership(src, dst string) error` / `GetFileOwnership(path string) (uid, gid uint32, err error)`
+- `MonitorMaxFilesSize(logDir string, maxsize int64, delFlag ...bool)` — background goroutine that trims oldest files when total size exceeds maxsize
+
+### File type (pool-buffered reader)
+
+- `type File struct` — wraps `*os.File` with a `sync.Pool` buffer for efficient reads
+- `(*File).Read() (n int, err error)` — read into a pooled buffer
+- `(*File).Close() error` — close the underlying file
 
 ### Filesystem Watcher
 
@@ -101,9 +124,16 @@ pidfile, err := pidfile.NewPidfile("", nil, "myapp", false)
 
 - `IsTerminal(fd uintptr) bool` / `IsTerminalWriter(w io.Writer) bool`
 - `GetHomeDir() string` / `GetWorkingDir() string` / `GetHostname() string` / `GetUsername() string`
+- `HomeDir() (string, error)` — current user home directory (with error)
+- `HomeDirNoErr() string` — home directory, returns empty string on error
+- `ExpandHomeDir(path string) (string, error)` — expand `~` prefix to home directory
+- `GetExecPath() (string, error)` — path of the current executable
+- `DirIsWritable(path string) (bool, error)` — check whether a directory is writable
 - `PathAddDirs(dirs ...string)` / `PathRemoveDirs(dirs ...string)` / `PathList() []string`
 - `EnvironmentMap(envstrings ...string) map[string]string`
+- `EnvironmentMapAdd(key, val string, envstrings ...string) map[string]string` — add a key-value pair to an env map
 - `EnvironmentMergeMap(m map[string]string) []string`
+- `EnvironmentMergeCurrentEnv(envMap map[string]string) []string` — merge map into current process environment
 - `EnvironmentMapToStrings(m map[string]string) []string`
 - `SetAllEnv(env []string)`
 
@@ -111,12 +141,15 @@ pidfile, err := pidfile.NewPidfile("", nil, "myapp", false)
 
 - `IsCurrentUserRoot() bool` / `IsCurrentUserInSudoGroup() bool`
 - `DoAsSystem(f func() error) error` / `DoAsService(serviceName string, f func() error) error`
+- `CreateClickTorun(appName, exepath, clickdir string, fullpathflag bool, showterminal bool, args ...string) error` — create a clickable launcher/shortcut for an executable
 - `Reboot(delay time.Duration)` / `RestartApp(appName string, delay ...time.Duration) bool`
 - `AppIsActive(appName string) bool`
 - `Chmod(name string, mode os.FileMode) error`
 - `GetGoroutineId() uint64`
 - `GetBuildTags() []string` / `BuildHasTags(tags ...string) bool`
 - `GetRuntimeCallerInformation(skip ...int) string`
+- `GetRuntimeCallerFuncName(skip ...int) string` — return only the function name of the caller
+- `Uptime() string` — system uptime as a human-readable string
 
 ### pidfile sub-package
 
