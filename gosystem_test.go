@@ -12,6 +12,6 @@ import (
 func TestKillProcess(t *testing.T) {
 	fmt.Println("parrent pid: ", os.Getppid())
 	time.Sleep(time.Second * 29)
-	err := KilPid(1716431)
+	err := KillPid(1716431)
 	require.Nil(t, err)
 }

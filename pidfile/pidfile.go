@@ -161,7 +161,7 @@ func NewPidfile(path string, passphrase []byte, progname string, removeIfFileInv
 			if os.Getenv("__FORCEKILL__") == "true" {
 				err = nil
 				os.Unsetenv("__FORCEKILL__")
-				gosystem.KilPid(oldpid)
+				gosystem.KillPid(oldpid)
 				setConfig()
 			} else {
 				err = errors.New("the program is still running")

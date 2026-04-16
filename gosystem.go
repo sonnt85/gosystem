@@ -89,7 +89,7 @@ func IsTerminalWriter1(w io.Writer) bool {
 		if fw, ok := w.(fduintptr); ok {
 			return IsTerminal(fw.Fd())
 		} else if fw, ok := w.(fdint); ok {
-			term.IsTerminal(fw.Fd())
+			return term.IsTerminal(fw.Fd())
 		}
 		return false
 	}
@@ -265,8 +265,8 @@ type ProcessNode struct {
 	Children []*ProcessNode
 }
 
-// GetProcessTree builds a process tree from a PID
-func GetPocessTree(pid int32) (*ProcessNode, error) {
+// GetProcessTree builds a process tree from a PID.
+func GetProcessTree(pid int32) (*ProcessNode, error) {
 	proc, err := process.NewProcess(pid)
 	if err != nil {
 		return nil, err
@@ -281,7 +281,7 @@ func GetPocessTree(pid int32) (*ProcessNode, error) {
 	}
 
 	for _, child := range children {
-		childNode, err := GetPocessTree(child.Pid)
+		childNode, err := GetProcessTree(child.Pid)
 		if err != nil {
 			return nil, err
 		}
@@ -439,7 +439,7 @@ func GetAllDescendantProcesses(rootPID int32, includeRootPid ...bool) ([]*proces
 func KillProcessTree(rootPID int32, signals ...os.Signal) (errret error) {
 	var descendantPIDs []int32
 	var err error
-	currentPid := int32(os.Getegid())
+	currentPid := int32(os.Getpid())
 	descendantPIDs, err = GetAllDescendantPIDs(rootPID)
 	if err != nil {
 		return err
@@ -549,7 +549,8 @@ func IsExitSignal(sig os.Signal) bool {
 	}
 }
 
-func KilProcessName(name string, isFullname ...bool) error {
+// KillProcessName kills all processes matching the given name.
+func KillProcessName(name string, isFullname ...bool) error {
 	ps, err := process.Processes()
 	if err != nil {
 		return err
@@ -665,7 +666,8 @@ func ProcessesOfPid(pid int32) (p *process.Process) {
 	return p
 }
 
-func KilPid(pidi interface{}) (err error) {
+// KillPid kills a process by its PID.
+func KillPid(pidi interface{}) (err error) {
 	//	p, err := process.NewProcess(pid) // Specify process id of parent
 	//	if err != nil {
 	//		return err
@@ -947,14 +949,10 @@ func Getwd() (pwd string) {
 	return
 }
 
+// GetEnvPathValue returns the value of the PATH environment variable.
+// Deprecated: Use PathGetEnvPathValue instead.
 func GetEnvPathValue() string {
-	for _, pathname := range []string{"PATH", "path"} {
-		path := os.Getenv(pathname)
-		if len(path) != 0 {
-			return path
-		}
-	}
-	return ""
+	return PathGetEnvPathValue()
 }
 
 func PathGetEnvPathKey() string {
@@ -1050,22 +1048,10 @@ func GetPathDirInEnvPathCanWrite() (ebinpath string) {
 
 func PathIsDir(path string) bool {
 	return gofilepath.PathIsDir(path)
-	if finfo, err := os.Stat(path); err == nil {
-		if finfo.IsDir() {
-			return true
-		}
-	}
-	return false
 }
 
 func PathIsFile(path string) bool {
 	return gofilepath.PathIsFile(path)
-	if finfo, err := os.Stat(path); err == nil {
-		if !finfo.IsDir() {
-			return true
-		}
-	}
-	return false
 }
 
 func PATHHasFile(filePath, PATH string) bool {
@@ -1121,7 +1107,8 @@ func SetAllEnv(env []string) {
 	}
 }
 
-func EnrovimentMap(envstrings ...string) (me map[string]string) {
+// EnvironmentMap converts environment strings ("KEY=VALUE") to a map.
+func EnvironmentMap(envstrings ...string) (me map[string]string) {
 	me = make(map[string]string)
 
 	if len(envstrings) == 0 {
@@ -1138,11 +1125,13 @@ func EnrovimentMap(envstrings ...string) (me map[string]string) {
 	return
 }
 
-func EnrovimentMergeMap(evmerge map[string]string) []string {
-	return godotenv.EnrovimentMergeWithCurrentEnv(evmerge)
+// EnvironmentMergeMap merges the given map with the current environment.
+func EnvironmentMergeMap(evmerge map[string]string) []string {
+	return godotenv.EnvironmentMergeWithCurrentEnv(evmerge)
 }
 
-func EnrovimentMapToStrings(me map[string]string) (se []string) {
+// EnvironmentMapToStrings converts an environment map to a slice of "KEY=VALUE" strings.
+func EnvironmentMapToStrings(me map[string]string) (se []string) {
 	se = []string{}
 	for k, e := range me {
 		se = append(se, fmt.Sprintf("%s=%s", k, e))
@@ -1150,17 +1139,20 @@ func EnrovimentMapToStrings(me map[string]string) (se []string) {
 	return
 }
 
-func EnrovimentStringAdd(key, val string, envstrings []string) (se []string) {
+// EnvironmentStringAdd appends a "KEY=VALUE" string to the given environment slice.
+func EnvironmentStringAdd(key, val string, envstrings []string) (se []string) {
 	return append(envstrings, fmt.Sprintf("%s=%s", key, val))
 }
 
-func EnrovimentMapAdd(key, val string, envstrings ...string) (me map[string]string) {
-	me = EnrovimentMap(envstrings...)
+// EnvironmentMapAdd adds a key-value pair to the environment map built from the given strings.
+func EnvironmentMapAdd(key, val string, envstrings ...string) (me map[string]string) {
+	me = EnvironmentMap(envstrings...)
 	me[key] = val
 	return
 }
 
-func EnrovimentMergeCurrentEnv(envMap map[string]string) (senv []string) {
+// EnvironmentMergeCurrentEnv merges the given map into the current environment and returns the result as strings.
+func EnvironmentMergeCurrentEnv(envMap map[string]string) (senv []string) {
 	var currentEnvMap = make(map[string]string, 0)
 	for _, rawEnvLine := range os.Environ() {
 		keyval := strings.Split(rawEnvLine, "=")
@@ -1176,9 +1168,10 @@ func EnrovimentMergeCurrentEnv(envMap map[string]string) (senv []string) {
 	return
 }
 
-func EnrovimentMergeCurrentEnvToMap(envMap map[string]string) (me map[string]string) {
-	mes := EnrovimentMergeCurrentEnv(envMap)
-	return EnrovimentMap(mes...)
+// EnvironmentMergeCurrentEnvToMap merges the given map into the current environment and returns the result as a map.
+func EnvironmentMergeCurrentEnvToMap(envMap map[string]string) (me map[string]string) {
+	mes := EnvironmentMergeCurrentEnv(envMap)
+	return EnvironmentMap(mes...)
 
 }
 
@@ -1462,6 +1455,7 @@ type File struct {
 }
 
 func OpenFile(filePath string, bufsize ...int) (f *File, err error) {
+	f = &File{}
 	f.f, err = os.Open(filePath)
 	if err != nil {
 		return
