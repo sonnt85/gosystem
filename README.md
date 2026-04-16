@@ -124,6 +124,10 @@ pidfile, err := pidfile.NewPidfile("", nil, "myapp", false)
 - `PidFileIsRunning(path string, passphrase []byte, progname string) bool`
 - `ProcessExists(pidi interface{}) bool`
 
+## Author
+
+**sonnt85** — [thanhson.rf@gmail.com](mailto:thanhson.rf@gmail.com)
+
 ## License
 
 MIT License - see [LICENSE](LICENSE) for details.
