@@ -12,7 +12,7 @@ require (
 	github.com/shirou/gopsutil/v4 v4.26.3
 	github.com/sonnt85/godotenv v0.0.0-20260416144759-091c793aa292
 	github.com/sonnt85/gofilepath v0.0.0-20260416144803-0e7b5d3b1586
-	github.com/sonnt85/gogmap v0.0.0-20260416144807-585c36ae469b
+	github.com/sonnt85/gogmap v0.0.0-20240829035007-c95925f2c46d
 	github.com/sonnt85/gosutils v0.0.0-20260416142838-020a7e72d8e4
 	github.com/sonnt85/gsjson v0.0.0-20250303164131-82fa4c8905d6
 	github.com/stretchr/testify v1.11.1
