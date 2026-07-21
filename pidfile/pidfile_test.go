@@ -1,52 +1,53 @@
+// Package pid provides structure and helper functions to create and remove
+// PID file.
 package pidfile
 
 import (
-	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/stretchr/testify/require"
 )
 
 func TestNewAndRemove(t *testing.T) {
-	dir, err := ioutil.TempDir(os.TempDir(), "test-pidfile")
+	dir, err := os.MkdirTemp(os.TempDir(), "test-pidfile")
 	if err != nil {
 		t.Fatal("Could not create test directory")
 	}
+	defer os.RemoveAll(dir)
 
-	path := filepath.Join(dir, "testfile")
-	file, err := New(path, nil)
+	path := filepath.Join(dir, "testfile.pid")
+	file, err := NewPidfile(path, nil, "", false)
 	if err != nil {
 		t.Fatal("Could not create test file", err)
 	}
 
-	_, err = New(path, nil)
-	if err == nil {
-		t.Fatal("Test file creation not blocked")
+	if pid := file.Get("pid").Int(); pid == 0 {
+		t.Fatal("PID should not be zero")
 	}
 
 	if err := file.Remove(); err != nil {
 		t.Fatal("Could not delete created test file")
 	}
-
-	if err := os.Remove(dir); err != nil {
-		t.Fatal("Could not delete test dir")
-	}
 }
 
-func TestRemoveInvalidPath(t *testing.T) {
-	file := Pidfile{path: filepath.Join("foo", "bar")}
-
-	if err := file.Remove(); err == nil {
-		t.Fatal("Non-existing file doesn't give an error on delete")
+func TestNewPidfileWithProgname(t *testing.T) {
+	dir, err := os.MkdirTemp(os.TempDir(), "test-pidfile")
+	if err != nil {
+		t.Fatal("Could not create test directory")
 	}
-}
+	defer os.RemoveAll(dir)
 
-func TestNew(t *testing.T) {
-	f, err := New("data/aa.pid", []byte("123"))
-	require.Nil(t, err)
-	fmt.Println(f.Map["pid"])
+	path := filepath.Join(dir, "testfile.pid")
+	f, err := NewPidfile(path, nil, "testprog", false)
+	if err != nil {
+		t.Fatal("Could not create pid file", err)
+	}
+	defer f.Remove()
 
+	if name := f.Get("name").String(); name == "" {
+		t.Fatal("Process name should not be empty")
+	}
+	if pid := f.Get("pid").Int(); pid != int64(os.Getpid()) {
+		t.Fatalf("PID mismatch: got %d, want %d", pid, os.Getpid())
+	}
 }

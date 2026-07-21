@@ -1799,7 +1799,7 @@ func FsnotifyChange(onConfigChange func(e fsnotify.Event), pauseWatchWhenCallBac
 
 				case err, ok := <-watcher.Errors:
 					if ok { // 'Errors' channel is not closed
-						err = fmt.Errorf(fmt.Sprintf("watcher error: %s", err))
+						err = fmt.Errorf("watcher error: %w", err)
 					}
 
 					// eventsWG.Done()
